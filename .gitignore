@@ -1,7 +1,10 @@
 # Rust
 /target/
+target
+debug
 **/*.rs.bk
 *.pdb
+**/mutants.out*/
 
 # Cargo keeps application lockfiles useful for reproducible builds.
 # Uncomment this only if this repository becomes a reusable Rust library.
@@ -58,6 +61,11 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# RustRover
+# JetBrains specific template is maintained separately. Uncomment the next line
+# only when local project metadata should be ignored entirely.
+# .idea/
 
 # Temporary files
 tmp/
