@@ -13,6 +13,32 @@ if [ "$#" -eq 0 ]; then
   set -- --data-dir .sponzey --dev-insecure-loopback
 fi
 
+case "${1:-}" in
+  agent)
+    shift
+    if [ "${1:-}" = "start" ]; then
+      shift
+    fi
+    ;;
+  start)
+    shift
+    ;;
+  controller)
+    if [ "${2:-}" = "-h" ] || [ "${2:-}" = "--help" ]; then
+      exec "$BIN" controller --help
+    fi
+    cat >&2 <<EOF
+error: run_agent.sh wraps only 'sponzey agent start'
+
+For controller commands, use:
+
+  ./scripts/run_controller.sh --help
+  "$BIN" controller --help
+EOF
+    exit 2
+    ;;
+esac
+
 for arg in "$@"; do
   case "$arg" in
     -h|--help)

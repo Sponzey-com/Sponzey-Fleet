@@ -13,4 +13,30 @@ if [ "$#" -eq 0 ]; then
   set -- --host 127.0.0.1 --port 7700 --data-dir .sponzey --dev-insecure-loopback
 fi
 
+case "${1:-}" in
+  controller)
+    shift
+    if [ "${1:-}" = "start" ]; then
+      shift
+    fi
+    ;;
+  start)
+    shift
+    ;;
+  agent)
+    if [ "${2:-}" = "-h" ] || [ "${2:-}" = "--help" ]; then
+      exec "$BIN" agent --help
+    fi
+    cat >&2 <<EOF
+error: run_controller.sh wraps only 'sponzey controller start'
+
+For agent commands, use:
+
+  ./scripts/run_agent.sh --help
+  "$BIN" agent --help
+EOF
+    exit 2
+    ;;
+esac
+
 exec "$BIN" controller start "$@"
