@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sponzey Fleet Admin</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body>
+    <main>
+      <header class="topbar">
+        <div>
+          <h1>Sponzey Fleet Admin</h1>
+          <p>Agent inventory, snapshots, drift, and audit for the local MVP controller.</p>
+        </div>
+        <form id="admin-auth" class="auth-form">
+          <label for="admin-token">Admin token</label>
+          <input id="admin-token" name="admin-token" type="password" autocomplete="off" />
+          <button type="submit">Refresh</button>
+        </form>
+      </header>
+
+      <section id="status" class="status" aria-live="polite">
+        Enter the one-time admin token printed by <code>sponzey controller init</code>.
+      </section>
+
+      <section class="layout">
+        <article class="panel agents-panel">
+          <div class="panel-heading">
+            <h2>Agents</h2>
+            <span id="agent-count" class="muted">0 known</span>
+          </div>
+          <div id="agents-list" class="list empty">No data loaded.</div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-heading">
+            <h2>Facts</h2>
+            <span class="muted">Latest snapshot</span>
+          </div>
+          <pre id="facts-panel" class="snapshot">Select an agent.</pre>
+        </article>
+
+        <article class="panel">
+          <div class="panel-heading">
+            <h2>Metrics</h2>
+            <span class="muted">Latest snapshot</span>
+          </div>
+          <pre id="metrics-panel" class="snapshot">Select an agent.</pre>
+        </article>
+
+        <article class="panel">
+          <div class="panel-heading">
+            <h2>Drift</h2>
+            <span class="muted">Expected vs actual</span>
+          </div>
+          <div id="drift-panel" class="diff">Select an agent.</div>
+        </article>
+
+        <article class="panel job-panel">
+          <div class="panel-heading">
+            <h2>Run</h2>
+            <span class="muted">Signed high-risk command</span>
+          </div>
+          <form id="run-command-form" class="run-form">
+            <label for="command-program">Program</label>
+            <input id="command-program" name="program" autocomplete="off" placeholder="uptime" />
+            <label for="command-args">Arguments</label>
+            <input id="command-args" name="args" autocomplete="off" placeholder="-a" />
+            <label class="checkbox-row">
+              <input name="confirm-risk" type="checkbox" />
+              <span>Confirm high-risk execution</span>
+            </label>
+            <button type="submit">Run</button>
+          </form>
+          <pre id="job-output" class="snapshot output-viewer">No job output.</pre>
+        </article>
+
+        <article class="panel">
+          <div class="panel-heading">
+            <h2>Jobs</h2>
+            <span class="muted">Recent command history</span>
+          </div>
+          <div id="jobs-list" class="list empty">No jobs loaded.</div>
+        </article>
+
+        <article class="panel audit-panel">
+          <div class="panel-heading">
+            <h2>Audit</h2>
+            <span class="muted">Product events are minimal; field debug belongs in logs.</span>
+          </div>
+          <div id="audit-list" class="list empty">No audit events loaded.</div>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

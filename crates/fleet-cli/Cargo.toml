@@ -1,0 +1,21 @@
+[package]
+name = "fleet-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "sponzey"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+fleet-controller = { path = "../fleet-controller" }
+fleet-core = { path = "../fleet-core" }
+fleet-domain = { path = "../fleet-domain" }
+fleet-protocol = { path = "../fleet-protocol" }
+fleet-runner = { path = "../fleet-runner" }
+fleet-store = { path = "../fleet-store" }
+serde_json = { workspace = true }
+tungstenite = { workspace = true }

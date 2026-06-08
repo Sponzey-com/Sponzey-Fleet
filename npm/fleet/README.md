@@ -1,0 +1,49 @@
+# @sponzey/fleet
+
+This package is a distribution wrapper for the Rust `sponzey` binary.
+
+The MVP repository builds the binary with Cargo:
+
+```sh
+cargo build -p fleet-cli
+npm test --prefix npm/fleet
+```
+
+The `sponzey` bin shim does not start a Node.js runtime server. It only resolves and executes a Rust binary.
+
+Resolution order:
+
+1. Explicit local binary override: `SPONZEY_FLEET_BIN`
+2. Repository development binary: `target/debug/sponzey`
+3. Release binary package next to this package, using `@sponzey/fleet-<os>-<arch>`
+
+Planned release package targets:
+
+- `@sponzey/fleet-darwin-arm64`
+- `@sponzey/fleet-darwin-x64`
+- `@sponzey/fleet-linux-arm64`
+- `@sponzey/fleet-linux-x64`
+
+Unsupported platforms fail with a clear `unsupported platform` error and exit code `127`.
+
+Local pack smoke:
+
+```sh
+./scripts/npm_local_pack_smoke.sh
+```
+
+Local platform package install smoke:
+
+```sh
+./scripts/npm_platform_local_install_smoke.sh
+```
+
+This stages the current Rust binary into the current OS/architecture package, packs the wrapper and platform package, creates a temporary global npm-style symlink layout, and verifies that `sponzey --help` resolves through the platform package.
+
+Local demo smoke:
+
+```sh
+./scripts/npm_demo_smoke.sh
+```
+
+The demo starts a temporary loopback-only controller, enrolls a local demo agent, runs a small confirmed command, prints the `/admin` URL, and removes the temporary data directory unless `sponzey demo --keep-temp` is used.

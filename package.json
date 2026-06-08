@@ -1,0 +1,17 @@
+{
+  "name": "sponzey-fleet-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "web-admin",
+    "npm/fleet",
+    "npm/fleet-darwin-arm64",
+    "npm/fleet-darwin-x64",
+    "npm/fleet-linux-arm64",
+    "npm/fleet-linux-x64"
+  ],
+  "scripts": {
+    "build:web-admin": "npm run build --workspace web-admin",
+    "test:web-admin": "npm test --workspace web-admin"
+  }
+}

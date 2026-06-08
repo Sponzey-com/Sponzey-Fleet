@@ -1,0 +1,16 @@
+{
+  "name": "@sponzey/fleet-linux-arm64",
+  "version": "0.1.0",
+  "description": "Sponzey Fleet Rust binary for Linux arm64",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin",
+    "README.md"
+  ],
+  "license": "Apache-2.0"
+}

@@ -1,0 +1,56 @@
+#!/usr/bin/env sh
+set -eu
+
+SELF="$0"
+while [ -L "$SELF" ]; do
+  DIR="$(CDPATH= cd -- "$(dirname -- "$SELF")" && pwd)"
+  TARGET="$(readlink "$SELF")"
+  case "$TARGET" in
+    /*) SELF="$TARGET" ;;
+    *) SELF="$DIR/$TARGET" ;;
+  esac
+done
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$SELF")" && pwd)"
+REPO_BIN="$SCRIPT_DIR/../../../target/debug/sponzey"
+
+if [ -n "${SPONZEY_FLEET_BIN:-}" ]; then
+  if [ -x "$SPONZEY_FLEET_BIN" ]; then
+    exec "$SPONZEY_FLEET_BIN" "$@"
+  fi
+  echo "SPONZEY_FLEET_BIN is set but is not executable: $SPONZEY_FLEET_BIN" >&2
+  exit 127
+fi
+
+if [ -z "${SPONZEY_FLEET_NPM_OS:-}" ] && [ -z "${SPONZEY_FLEET_NPM_ARCH:-}" ] && [ -x "$REPO_BIN" ]; then
+  exec "$REPO_BIN" "$@"
+fi
+
+OS="${SPONZEY_FLEET_NPM_OS:-$(uname -s | tr '[:upper:]' '[:lower:]')}"
+ARCH="${SPONZEY_FLEET_NPM_ARCH:-$(uname -m)}"
+
+case "$OS" in
+  darwin) PLATFORM_OS="darwin" ;;
+  linux) PLATFORM_OS="linux" ;;
+  *) PLATFORM_OS="" ;;
+esac
+
+case "$ARCH" in
+  arm64|aarch64) PLATFORM_ARCH="arm64" ;;
+  x86_64|amd64) PLATFORM_ARCH="x64" ;;
+  *) PLATFORM_ARCH="" ;;
+esac
+
+if [ -n "$PLATFORM_OS" ] && [ -n "$PLATFORM_ARCH" ]; then
+  PLATFORM_BIN="$SCRIPT_DIR/../../fleet-$PLATFORM_OS-$PLATFORM_ARCH/bin/sponzey"
+  if [ -x "$PLATFORM_BIN" ]; then
+    exec "$PLATFORM_BIN" "$@"
+  fi
+
+  echo "sponzey Rust binary for $PLATFORM_OS-$PLATFORM_ARCH was not found." >&2
+  echo "For repository development, run: cargo build -p fleet-cli" >&2
+  exit 127
+fi
+
+echo "unsupported platform for @sponzey/fleet: os=$OS arch=$ARCH" >&2
+echo "Supported release package targets: darwin-arm64, darwin-x64, linux-arm64, linux-x64" >&2
+exit 127

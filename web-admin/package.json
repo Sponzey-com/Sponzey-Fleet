@@ -1,0 +1,11 @@
+{
+  "name": "@sponzey/fleet-web-admin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node ./scripts/build.js",
+    "test": "node ./scripts/test.js",
+    "typecheck": "node ./scripts/typecheck.js"
+  }
+}
