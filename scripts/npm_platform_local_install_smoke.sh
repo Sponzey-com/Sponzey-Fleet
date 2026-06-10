@@ -62,9 +62,10 @@ if [ -z "$WRAPPER_TARBALL" ] || [ -z "$PLATFORM_TARBALL" ]; then
 fi
 
 INSTALL_SCOPE="$WORK_DIR/prefix/lib/node_modules/@sponzey"
-mkdir -p "$INSTALL_SCOPE/fleet" "$INSTALL_SCOPE/fleet-$PLATFORM_OS-$PLATFORM_ARCH" "$WORK_DIR/prefix/bin"
+NESTED_PLATFORM_SCOPE="$INSTALL_SCOPE/fleet/node_modules/@sponzey"
+mkdir -p "$INSTALL_SCOPE/fleet" "$NESTED_PLATFORM_SCOPE/fleet-$PLATFORM_OS-$PLATFORM_ARCH" "$WORK_DIR/prefix/bin"
 tar -xzf "$WRAPPER_TARBALL" -C "$INSTALL_SCOPE/fleet" --strip-components 1
-tar -xzf "$PLATFORM_TARBALL" -C "$INSTALL_SCOPE/fleet-$PLATFORM_OS-$PLATFORM_ARCH" --strip-components 1
+tar -xzf "$PLATFORM_TARBALL" -C "$NESTED_PLATFORM_SCOPE/fleet-$PLATFORM_OS-$PLATFORM_ARCH" --strip-components 1
 ln -s "../lib/node_modules/@sponzey/fleet/bin/sponzey" "$WORK_DIR/prefix/bin/sponzey"
 
 SPONZEY_FLEET_NPM_OS="$PLATFORM_OS" \

@@ -114,9 +114,16 @@ The script checks that both `sponzey-fleet-controller.service` and `sponzey-flee
 After publishing `@sponzey/fleet` and its platform packages to the npm registry:
 
 ```bash
+./scripts/npm_publish_current_platform.sh --dry-run
+SPONZEY_NPM_TOKEN_FILE=token.md ./scripts/npm_publish_current_platform.sh
 ./scripts/manual_npm_registry_smoke.sh
 # or run it through the release gate
 ./scripts/release_readiness_gate.sh --include-registry
 ```
 
 The script installs into a temporary npm prefix and verifies that `sponzey --help` runs through the installed wrapper.
+
+For full multi-platform npm publish, use the GitHub Actions workflow in
+`.github/workflows/npm-release.yml`. Store an npm automation token in the
+repository secret `NPM_TOKEN`, bump all package versions, then push a matching
+tag such as `v0.1.2`.

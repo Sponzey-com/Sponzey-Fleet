@@ -47,3 +47,26 @@ Local demo smoke:
 ```
 
 The demo starts a temporary loopback-only controller, enrolls a local demo agent, runs a small confirmed command, prints the `/admin` URL, and removes the temporary data directory unless `sponzey demo --keep-temp` is used.
+
+Registry publish for the current OS/architecture:
+
+```sh
+./scripts/npm_publish_current_platform.sh --dry-run
+SPONZEY_NPM_TOKEN_FILE=token.md ./scripts/npm_publish_current_platform.sh
+./scripts/manual_npm_registry_smoke.sh
+```
+
+The publish script stages the current `target/release/sponzey` binary into the matching platform package, publishes that package first, then publishes this wrapper package. The wrapper package is what users install:
+
+```sh
+npm install -g @sponzey/fleet
+sponzey --help
+```
+
+GitHub Actions release:
+
+1. Add an npm automation token as the repository secret `NPM_TOKEN`.
+2. Bump `Cargo.toml`, `Cargo.lock`, root `package.json`, `npm/fleet/package.json`, and every `npm/fleet-*/package.json` to the same version.
+3. Push a matching tag, for example `v0.1.2`.
+
+The `.github/workflows/npm-release.yml` workflow builds native platform packages on GitHub-hosted runners, publishes all platform packages first, and publishes this wrapper package last.

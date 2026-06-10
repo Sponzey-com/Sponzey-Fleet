@@ -31,6 +31,11 @@ if (!body.includes("fleet-$PLATFORM_OS-$PLATFORM_ARCH")) {
   process.exit(1);
 }
 
+if (!body.includes("node_modules/@sponzey/fleet-$PLATFORM_OS-$PLATFORM_ARCH")) {
+  console.error("bin/sponzey must support npm nested optional dependency lookup");
+  process.exit(1);
+}
+
 const unsupported = spawnSync(bin, ["--help"], {
   env: {
     ...process.env,

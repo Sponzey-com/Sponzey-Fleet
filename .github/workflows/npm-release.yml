@@ -1,0 +1,199 @@
+name: npm release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Package version to validate against, for example 0.1.2. Defaults to npm/fleet/package.json."
+        required: false
+        type: string
+      dry_run:
+        description: "Run npm publish with --dry-run."
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate release version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      npm_tag: ${{ steps.release.outputs.npm_tag }}
+      dry_run: ${{ steps.release.outputs.dry_run }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Validate package metadata
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          package_version="$(node -p "require('./npm/fleet/package.json').version")"
+          workspace_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            tag_version="${GITHUB_REF_NAME#v}"
+            dry_run="false"
+          else
+            tag_version="${{ inputs.version }}"
+            dry_run="${{ inputs.dry_run }}"
+            if [[ -z "$tag_version" ]]; then
+              tag_version="$package_version"
+            fi
+          fi
+
+          if [[ "$tag_version" != "$package_version" ]]; then
+            echo "tag/input version ($tag_version) must match npm/fleet package version ($package_version)" >&2
+            exit 1
+          fi
+
+          if [[ "$tag_version" != "$workspace_version" ]]; then
+            echo "tag/input version ($tag_version) must match Cargo workspace version ($workspace_version)" >&2
+            exit 1
+          fi
+
+          for file in \
+            npm/fleet-darwin-arm64/package.json \
+            npm/fleet-darwin-x64/package.json \
+            npm/fleet-linux-arm64/package.json \
+            npm/fleet-linux-x64/package.json
+          do
+            version="$(node -p "require('./$file').version")"
+            if [[ "$version" != "$tag_version" ]]; then
+              echo "$file version ($version) must match release version ($tag_version)" >&2
+              exit 1
+            fi
+          done
+
+          if [[ "$tag_version" == *-* ]]; then
+            npm_tag="next"
+          else
+            npm_tag="latest"
+          fi
+
+          echo "version=$tag_version" >> "$GITHUB_OUTPUT"
+          echo "npm_tag=$npm_tag" >> "$GITHUB_OUTPUT"
+          echo "dry_run=$dry_run" >> "$GITHUB_OUTPUT"
+
+      - name: Verify npm wrapper metadata
+        run: npm test --workspace @sponzey/fleet
+
+  build-platform:
+    name: Build ${{ matrix.package }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: fleet-darwin-arm64
+            runner: macos-14
+          - package: fleet-darwin-x64
+            runner: macos-15-intel
+          - package: fleet-linux-arm64
+            runner: ubuntu-24.04-arm
+          - package: fleet-linux-x64
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build and stage npm platform package
+        run: ./scripts/npm_stage_current_platform.sh --out-dir dist/npm
+
+      - name: Verify staged package matches matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "dist/npm/${{ matrix.package }}/package.json"
+          "dist/npm/${{ matrix.package }}/bin/sponzey" --help >/dev/null
+
+      - name: Upload platform package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.package }}
+          path: dist/npm/${{ matrix.package }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish npm packages
+    needs:
+      - validate
+      - build-platform
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js for npm registry
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Download platform packages
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/npm
+
+      - name: Publish platform packages, then wrapper
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TAG: ${{ needs.validate.outputs.npm_tag }}
+          DRY_RUN: ${{ needs.validate.outputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          publish_flags=(--access public --tag "$NPM_TAG")
+          if [[ "$DRY_RUN" == "true" ]]; then
+            publish_flags+=(--dry-run)
+          elif [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
+            echo "NPM_TOKEN repository secret is required for a real publish." >&2
+            exit 1
+          fi
+
+          for package in \
+            fleet-darwin-arm64 \
+            fleet-darwin-x64 \
+            fleet-linux-arm64 \
+            fleet-linux-x64
+          do
+            test -f "dist/npm/$package/package.json"
+            version="$(node -p "require('./dist/npm/$package/package.json').version")"
+            package_name="@sponzey/$package"
+            if [[ "$DRY_RUN" != "true" ]] && npm view "$package_name@$version" version >/dev/null 2>&1; then
+              echo "$package_name@$version already exists; skipping publish."
+              continue
+            fi
+            npm publish "dist/npm/$package" "${publish_flags[@]}"
+          done
+
+          wrapper_version="$(node -p "require('./npm/fleet/package.json').version")"
+          if [[ "$DRY_RUN" != "true" ]] && npm view "@sponzey/fleet@$wrapper_version" version >/dev/null 2>&1; then
+            echo "@sponzey/fleet@$wrapper_version already exists; skipping publish."
+          else
+            npm publish npm/fleet "${publish_flags[@]}"
+          fi

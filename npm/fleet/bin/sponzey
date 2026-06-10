@@ -41,9 +41,14 @@ case "$ARCH" in
 esac
 
 if [ -n "$PLATFORM_OS" ] && [ -n "$PLATFORM_ARCH" ]; then
-  PLATFORM_BIN="$SCRIPT_DIR/../../fleet-$PLATFORM_OS-$PLATFORM_ARCH/bin/sponzey"
-  if [ -x "$PLATFORM_BIN" ]; then
-    exec "$PLATFORM_BIN" "$@"
+  NESTED_PLATFORM_BIN="$SCRIPT_DIR/../node_modules/@sponzey/fleet-$PLATFORM_OS-$PLATFORM_ARCH/bin/sponzey"
+  if [ -x "$NESTED_PLATFORM_BIN" ]; then
+    exec "$NESTED_PLATFORM_BIN" "$@"
+  fi
+
+  SIBLING_PLATFORM_BIN="$SCRIPT_DIR/../../fleet-$PLATFORM_OS-$PLATFORM_ARCH/bin/sponzey"
+  if [ -x "$SIBLING_PLATFORM_BIN" ]; then
+    exec "$SIBLING_PLATFORM_BIN" "$@"
   fi
 
   echo "sponzey Rust binary for $PLATFORM_OS-$PLATFORM_ARCH was not found." >&2
