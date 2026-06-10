@@ -196,5 +196,5 @@ jobs:
           if [[ "$DRY_RUN" != "true" ]] && npm view "@sponzey/fleet@$wrapper_version" version >/dev/null 2>&1; then
             echo "@sponzey/fleet@$wrapper_version already exists; skipping publish."
           else
-            npm publish npm/fleet "${publish_flags[@]}"
+            npm publish ./npm/fleet "${publish_flags[@]}"
           fi
