@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Package version to validate against, for example 0.1.2. Defaults to npm/fleet/package.json."
+        description: "Package version to validate against, for example 0.1.3. Defaults to npm/fleet/package.json."
         required: false
         type: string
       dry_run:
@@ -109,9 +109,9 @@ jobs:
           - package: fleet-darwin-x64
             runner: macos-15-intel
           - package: fleet-linux-arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-22.04-arm
           - package: fleet-linux-x64
-            runner: ubuntu-24.04
+            runner: ubuntu-22.04
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
