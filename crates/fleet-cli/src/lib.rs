@@ -127,9 +127,10 @@ pub enum AgentSubcommand {
     #[command(
         about = "Enroll this host as an agent",
         long_about = "Enroll this host with a controller using a one-time enrollment token.\n\nEnrollment writes the local agent identity, private key, labels, and pinned controller fingerprint under the selected data directory. Run this once before starting the agent.",
-        after_help = "Examples:\n  sponzey agent enroll --url http://127.0.0.1:7700 --token <token> --name web-01 --labels role=web,env=dev\n  sponzey agent enroll --data-dir /var/lib/sponzey-fleet --url https://fleet.example.com --token <token> --name prod-web-01 --labels role=web,env=prod"
+        visible_alias = "enroll",
+        after_help = "Examples:\n  sponzey agent init --url http://127.0.0.1:7700 --token <token> --name web-01 --labels role=web,env=dev\n  sponzey agent enroll --data-dir /var/lib/sponzey-fleet --url https://fleet.example.com --token <token> --name prod-web-01 --labels role=web,env=prod"
     )]
-    Enroll {
+    Init {
         #[arg(long, help = "Controller URL to enroll against")]
         url: String,
         #[arg(long, help = "One-time enrollment token created by the controller")]
@@ -148,7 +149,7 @@ pub enum AgentSubcommand {
     #[command(
         about = "Start the enrolled local agent",
         long_about = "Start the enrolled local agent heartbeat and task loop.\n\nThe agent reads its local identity from <data-dir>/agent/agent.conf, verifies the pinned controller fingerprint, sends facts and metrics during heartbeat, and receives controller-signed tasks. The agent must be enrolled before this command can run.",
-        after_help = "Examples:\n  sponzey agent start --data-dir .sponzey --dev-insecure-loopback\n  sponzey agent start --data-dir /var/lib/sponzey-fleet\n  sponzey agent start --data-dir .sponzey --once\n\nLocal development flow:\n  sponzey controller init --data-dir .sponzey\n  sponzey enroll-token create --data-dir .sponzey --labels role=web,env=dev\n  sponzey agent enroll --data-dir .sponzey --url http://127.0.0.1:7700 --token <token> --name web-01 --labels role=web,env=dev\n  sponzey agent start --data-dir .sponzey --dev-insecure-loopback"
+        after_help = "Examples:\n  sponzey agent start --data-dir .sponzey --dev-insecure-loopback\n  sponzey agent start --data-dir /var/lib/sponzey-fleet\n  sponzey agent start --data-dir .sponzey --once\n\nLocal development flow:\n  sponzey controller init --data-dir .sponzey\n  sponzey enroll-token create --data-dir .sponzey --labels role=web,env=dev\n  sponzey agent init --data-dir .sponzey --url http://127.0.0.1:7700 --token <token> --name web-01 --labels role=web,env=dev\n  sponzey agent start --data-dir .sponzey --dev-insecure-loopback"
     )]
     Start {
         #[arg(
@@ -530,7 +531,7 @@ fn execute_enroll_token(command: EnrollTokenCommand) -> Result<(), CliError> {
 
 fn execute_agent(command: AgentCommand) -> Result<(), CliError> {
     match command.command {
-        AgentSubcommand::Enroll {
+        AgentSubcommand::Init {
             url,
             token,
             name,
@@ -3131,6 +3132,63 @@ postgresql.service loaded failed failed PostgreSQL database server
         ] {
             assert!(help.contains(expected), "missing help entry: {expected}");
         }
+    }
+
+    #[test]
+    fn agent_init_parses_enrollment() {
+        let cli = Cli::try_parse_from([
+            "sponzey",
+            "agent",
+            "init",
+            "--url",
+            "http://127.0.0.1:7700",
+            "--token",
+            "token-1",
+            "--name",
+            "web-01",
+            "--labels",
+            "role=web,env=dev",
+        ])
+        .expect("agent init should parse");
+
+        assert!(matches!(
+            cli.command,
+            Command::Agent(AgentCommand {
+                command: AgentSubcommand::Init {
+                    url,
+                    token,
+                    name,
+                    labels,
+                    ..
+                }
+            }) if url == "http://127.0.0.1:7700"
+                && token == "token-1"
+                && name == "web-01"
+                && labels == "role=web,env=dev"
+        ));
+    }
+
+    #[test]
+    fn agent_enroll_remains_alias_for_init() {
+        let cli = Cli::try_parse_from([
+            "sponzey",
+            "agent",
+            "enroll",
+            "--url",
+            "http://127.0.0.1:7700",
+            "--token",
+            "token-1",
+            "--name",
+            "web-01",
+        ])
+        .expect("agent enroll alias should parse");
+
+        assert!(matches!(
+            cli.command,
+            Command::Agent(AgentCommand {
+                command: AgentSubcommand::Init { name, .. }
+            }) if name == "web-01"
+        ));
     }
 
     #[test]

@@ -78,13 +78,15 @@ TOKEN=$(sponzey enroll-token create \
   --data-dir .sponzey \
   --labels role=web,env=dev)
 
-sponzey agent enroll \
+sponzey agent init \
   --data-dir .sponzey \
   --url http://127.0.0.1:7700 \
   --token "$TOKEN" \
   --name web-01 \
   --labels role=web,env=dev
 ```
+
+`sponzey agent init`은 최초 설정 명령입니다. `sponzey agent enroll`은 controller enrollment 흐름을 명확히 설명하거나 기존 사용법을 유지하기 위한 호환 별칭으로 계속 사용할 수 있습니다.
 
 Agent를 한 번 실행해서 heartbeat, facts, metrics를 보낸 뒤 종료합니다.
 
@@ -138,7 +140,7 @@ MVP Web Admin UI는 의도적으로 가볍게 유지합니다. Controller가 직
 rm -rf .sponzey/agent
 ```
 
-Controller 쪽 inventory와 audit records는 추적 가능성을 위해 의도적으로 보존합니다. 같은 host를 다시 사용하려면 새 enrollment token을 만들고 `sponzey agent enroll`을 다시 실행합니다.
+Controller 쪽 inventory와 audit records는 추적 가능성을 위해 의도적으로 보존합니다. 같은 host를 다시 사용하려면 새 enrollment token을 만들고 `sponzey agent init`을 다시 실행합니다.
 
 제품 수준의 삭제 또는 비활성화는 감사 가능한 controller-side 흐름이어야 합니다. 예시는 아래와 같습니다.
 
@@ -168,6 +170,7 @@ sponzey --help
 sponzey controller --help
 sponzey controller start --help
 sponzey agent --help
+sponzey agent init --help
 sponzey agent enroll --help
 sponzey agent start --help
 ```

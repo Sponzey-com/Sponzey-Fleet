@@ -78,13 +78,15 @@ TOKEN=$(sponzey enroll-token create \
   --data-dir .sponzey \
   --labels role=web,env=dev)
 
-sponzey agent enroll \
+sponzey agent init \
   --data-dir .sponzey \
   --url http://127.0.0.1:7700 \
   --token "$TOKEN" \
   --name web-01 \
   --labels role=web,env=dev
 ```
+
+`sponzey agent init` is the first-time setup command. `sponzey agent enroll` remains available as a compatibility alias when you want to describe the controller enrollment flow explicitly.
 
 Start the agent once to send a heartbeat, facts, and metrics, then exit:
 
@@ -138,7 +140,7 @@ Current MVP cleanup removes the local agent identity and configuration. Stop the
 rm -rf .sponzey/agent
 ```
 
-The controller-side inventory and audit records are intentionally retained for traceability. To use the same host again, create a new enrollment token and run `sponzey agent enroll` again.
+The controller-side inventory and audit records are intentionally retained for traceability. To use the same host again, create a new enrollment token and run `sponzey agent init` again.
 
 A production-ready delete or disable flow should be audited and controller-side, for example:
 
@@ -168,6 +170,7 @@ sponzey --help
 sponzey controller --help
 sponzey controller start --help
 sponzey agent --help
+sponzey agent init --help
 sponzey agent enroll --help
 sponzey agent start --help
 ```

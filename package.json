@@ -1,6 +1,6 @@
 {
   "name": "sponzey-fleet-workspace",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "workspaces": [
     "web-admin",
