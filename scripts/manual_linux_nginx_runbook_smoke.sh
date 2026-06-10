@@ -68,7 +68,7 @@ if [ "$i" -eq 50 ]; then
 fi
 
 TOKEN="$("$BIN" enroll-token create --data-dir "$WORK_DIR" --labels role=web,env=manual)"
-"$BIN" agent enroll \
+"$BIN" agent init \
   --data-dir "$WORK_DIR" \
   --url "http://127.0.0.1:$PORT" \
   --token "$TOKEN" \

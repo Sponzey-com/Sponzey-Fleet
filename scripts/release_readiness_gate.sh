@@ -53,6 +53,12 @@ run ./scripts/npm_local_pack_smoke.sh
 run ./scripts/npm_platform_local_install_smoke.sh
 run ./scripts/npm_demo_smoke.sh
 run ./scripts/smoke_mvp.sh
+run ./scripts/smoke_remote_tls_loopback.sh
+if [ -f target/release/sponzey ]; then
+  run ./scripts/check_linux_glibc_baseline.sh target/release/sponzey
+else
+  echo "glibc baseline check skipped: target/release/sponzey not built."
+fi
 run ./scripts/hardening_audit.sh
 
 if [ "$INCLUDE_REGISTRY" -eq 1 ]; then

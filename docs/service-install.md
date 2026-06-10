@@ -9,9 +9,11 @@ sponzey controller install-service --data-dir /var/lib/sponzey-fleet --dry-run
 sponzey agent install-service --data-dir /var/lib/sponzey-fleet --dry-run
 sponzey controller start-service --dry-run
 sponzey agent start-service --dry-run
+sponzey controller uninstall-service --dry-run
+sponzey agent uninstall-service --dry-run
 ```
 
-Without `--dry-run`, `install-service` writes `/etc/systemd/system/sponzey-fleet-controller.service` or `/etc/systemd/system/sponzey-fleet-agent.service`, then runs `systemctl daemon-reload` and `systemctl enable ...`. `start-service` runs `systemctl start ...`.
+Without `--dry-run`, `install-service` writes `/etc/systemd/system/sponzey-fleet-controller.service` or `/etc/systemd/system/sponzey-fleet-agent.service`, then runs `systemctl daemon-reload` and `systemctl enable ...`. `start-service` runs `systemctl start ...`. `uninstall-service` runs `systemctl disable --now ...`, removes the service file, then runs `systemctl daemon-reload`.
 
 Non-Linux hosts fail with a clear Linux requirement. Linux hosts without root fail with a clear sudo/root requirement. Dry-run never writes system files.
 
@@ -43,6 +45,7 @@ Systemd unit generation:
 - avoid runtime environment mutation,
 - fails clearly when Linux/root requirements are not met,
 - supports dry-run output before writing system files.
+- supports dry-run output before disabling/removing service files.
 
 ## Manual Systemd Shape
 

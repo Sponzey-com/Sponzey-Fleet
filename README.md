@@ -64,6 +64,7 @@ sponzey controller start \
   --host 127.0.0.1 \
   --port 7700 \
   --data-dir .sponzey \
+  --external-url http://127.0.0.1:7700 \
   --dev-insecure-loopback
 ```
 
@@ -108,9 +109,55 @@ sponzey agent start \
 Local development scripts wrap the same single binary:
 
 ```bash
-./scripts/run_controller.sh --host 127.0.0.1 --port 7700 --data-dir .sponzey --dev-insecure-loopback
+./scripts/run_controller.sh --host 127.0.0.1 --port 7700 --data-dir .sponzey --external-url http://127.0.0.1:7700 --dev-insecure-loopback
 ./scripts/run_agent.sh --data-dir .sponzey --dev-insecure-loopback
 ```
+
+### Remote Laptop Development With SSH Tunnel
+
+For another laptop, do not use a LAN `http://192.168.x.x:7700` controller URL. The MVP intentionally rejects non-loopback insecure HTTP. Keep the controller bound to loopback on the controller laptop, then expose it to the agent laptop with SSH port forwarding.
+
+On the controller laptop:
+
+```bash
+sponzey controller init --data-dir .sponzey
+
+sponzey controller start \
+  --host 127.0.0.1 \
+  --port 7700 \
+  --data-dir .sponzey \
+  --external-url http://127.0.0.1:7700 \
+  --dev-insecure-loopback
+```
+
+Create the enrollment token on the controller laptop and copy only that token to the agent laptop:
+
+```bash
+sponzey enroll-token create --data-dir .sponzey --labels role=web,env=dev
+```
+
+On the agent laptop, open the tunnel and keep it running:
+
+```bash
+ssh -N -L 7700:127.0.0.1:7700 <user>@<controller-laptop-hostname-or-ip>
+```
+
+In another terminal on the agent laptop, initialize and start the agent through the tunnel:
+
+```bash
+sponzey agent init \
+  --data-dir .sponzey \
+  --url http://127.0.0.1:7700 \
+  --token "<enrollment-token-from-controller-laptop>" \
+  --name laptop-02 \
+  --labels role=dev-laptop,env=dev
+
+sponzey agent start \
+  --data-dir .sponzey \
+  --dev-insecure-loopback
+```
+
+The tunnel must stay open while the agent is running. For production remote enrollment and agent traffic, use HTTPS/TLS rather than insecure HTTP.
 
 ### 3. View The Agent In The Web Admin UI
 
@@ -171,7 +218,6 @@ sponzey controller --help
 sponzey controller start --help
 sponzey agent --help
 sponzey agent init --help
-sponzey agent enroll --help
 sponzey agent start --help
 ```
 
@@ -188,7 +234,10 @@ Sponzey Fleet is a remote operations platform and can eventually run as root on 
 
 - agents connect outbound to the controller,
 - enrollment tokens are one-time registration inputs,
-- agents pin the controller fingerprint,
+- agents pin the controller signing fingerprint,
+- TLS certificate trust protects transport, while the controller signing fingerprint protects product identity,
+- replacing a TLS certificate is allowed when the pinned controller signing fingerprint stays the same,
+- changing the controller signing key requires explicit agent re-enrollment or a future audited rotation flow,
 - task envelopes are signed by the controller,
 - unsigned, expired, replayed, or target-mismatched tasks are rejected by the agent,
 - high-risk commands require explicit confirmation,

@@ -46,7 +46,7 @@ case "$MODE" in
       echo "controller service did not become healthy at $CONTROLLER_URL" >&2
       exit 1
     fi
-    "$BIN" agent enroll \
+    "$BIN" agent init \
       --data-dir "$DATA_DIR" \
       --url "$CONTROLLER_URL" \
       --token "$TOKEN" \

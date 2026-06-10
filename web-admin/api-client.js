@@ -32,6 +32,9 @@ export function createApiClient({ fetchImpl = globalThis.fetch, tokenProvider = 
     if (!response.ok) {
       throw new Error(formatError(path, response.status));
     }
+    if (response.status === 204) {
+      return null;
+    }
     return response.json();
   }
 
@@ -56,6 +59,20 @@ export function createApiClient({ fetchImpl = globalThis.fetch, tokenProvider = 
     },
     listAudit() {
       return request("/api/audit");
+    },
+    listEnrollmentTokens() {
+      return request("/api/enrollment-tokens");
+    },
+    createEnrollmentToken(body) {
+      return request("/api/enrollment-tokens", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+    },
+    revokeEnrollmentToken(id) {
+      return request(`/api/enrollment-tokens/${encodePathValue(id)}`, {
+        method: "DELETE",
+      });
     },
     createCommandJob(body) {
       return request("/api/jobs/command", {

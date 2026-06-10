@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Package version to validate against, for example 0.1.4. Defaults to npm/fleet/package.json."
+        description: "Package version to validate against, for example 0.1.5. Defaults to npm/fleet/package.json."
         required: false
         type: string
       dry_run:
@@ -127,6 +127,10 @@ jobs:
           test -f "dist/npm/${{ matrix.package }}/package.json"
           "dist/npm/${{ matrix.package }}/bin/sponzey" --help >/dev/null
 
+      - name: Check Linux glibc baseline
+        if: startsWith(matrix.package, 'fleet-linux-')
+        run: ./scripts/check_linux_glibc_baseline.sh "dist/npm/${{ matrix.package }}/bin/sponzey"
+
       - name: Upload platform package
         uses: actions/upload-artifact@v4
         with:
@@ -141,7 +145,7 @@ jobs:
       - build-platform
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
+      contents: write
       id-token: write
     steps:
       - name: Checkout
@@ -157,6 +161,37 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: dist/npm
+
+      - name: Package standalone binary artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist/release
+          for package in \
+            fleet-darwin-arm64 \
+            fleet-darwin-x64 \
+            fleet-linux-arm64 \
+            fleet-linux-x64
+          do
+            platform="${package#fleet-}"
+            binary="dist/npm/$package/bin/sponzey"
+            test -x "$binary"
+            artifact_dir="dist/release/sponzey-$platform"
+            mkdir -p "$artifact_dir"
+            cp "$binary" "$artifact_dir/sponzey"
+            chmod +x "$artifact_dir/sponzey"
+            tar -C dist/release -czf "dist/release/sponzey-$platform.tar.gz" "sponzey-$platform"
+          done
+          (cd dist/release && sha256sum *.tar.gz > SHA256SUMS)
+
+      - name: Upload GitHub Release artifacts
+        if: github.event_name == 'push' && needs.validate.outputs.dry_run == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/release/*.tar.gz
+            dist/release/SHA256SUMS
 
       - name: Publish platform packages, then wrapper
         shell: bash

@@ -17,5 +17,8 @@ fleet-domain = { path = "../fleet-domain" }
 fleet-protocol = { path = "../fleet-protocol" }
 fleet-runner = { path = "../fleet-runner" }
 fleet-store = { path = "../fleet-store" }
+reqwest = { workspace = true }
+rustls-pemfile = { workspace = true }
 serde_json = { workspace = true }
+tokio-rustls = { workspace = true }
 tungstenite = { workspace = true }

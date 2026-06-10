@@ -2,7 +2,7 @@ use clap::{Args, Parser, Subcommand};
 use fleet_core::{LogProfile, init_logging, redact_secret};
 use std::fmt::{Display, Formatter};
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitCode};
@@ -12,7 +12,9 @@ use std::sync::{
 };
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tungstenite::Message;
+use tokio_rustls::rustls::{ClientConfig as RustlsClientConfig, RootCertStore};
+use tungstenite::client::IntoClientRequest;
+use tungstenite::{Connector, Message};
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -85,14 +87,34 @@ pub enum ControllerSubcommand {
         #[arg(long, default_value = ".sponzey")]
         data_dir: PathBuf,
     },
+    #[command(
+        about = "Start the Sponzey Fleet controller",
+        long_about = "Start the Sponzey Fleet controller API, Web Admin UI, and agent gateway.\n\nThe bind host controls where the process listens. The external URL is the public URL agents and operators should use. Do not use 0.0.0.0 as an agent URL.",
+        after_help = "Examples:\n  Local loopback demo:\n    sponzey controller start --host 127.0.0.1 --port 7700 --data-dir .sponzey --dev-insecure-loopback --external-url http://127.0.0.1:7700\n\n  SSH tunnel development:\n    sponzey controller start --host 127.0.0.1 --port 7700 --data-dir .sponzey --dev-insecure-loopback --external-url http://127.0.0.1:7700\n\n  Production HTTPS behind DNS/reverse proxy:\n    sponzey controller start --host 127.0.0.1 --port 7700 --data-dir /var/lib/sponzey-fleet --external-url https://fleet.example.com\n\n  Built-in HTTPS listener:\n    sponzey controller start --host 0.0.0.0 --port 7700 --data-dir /var/lib/sponzey-fleet --external-url https://fleet.example.com --tls-cert /etc/sponzey/tls/fullchain.pem --tls-key /etc/sponzey/tls/privkey.pem"
+    )]
     Start {
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
         #[arg(long, default_value_t = 7700)]
         port: u16,
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Public controller URL agents use; production URLs must be HTTPS"
+        )]
+        external_url: Option<String>,
+        #[arg(
+            long,
+            help = "SQLite database URL, for example sqlite:///var/lib/sponzey-fleet/controller/fleet.db"
+        )]
         db: Option<String>,
-        #[arg(long)]
+        #[arg(long, help = "PEM certificate chain for built-in HTTPS listener")]
+        tls_cert: Option<PathBuf>,
+        #[arg(long, help = "PEM private key for built-in HTTPS listener")]
+        tls_key: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Allow insecure HTTP only for 127.0.0.1/localhost development"
+        )]
         dev_insecure_loopback: bool,
         #[arg(long, default_value = ".sponzey")]
         data_dir: PathBuf,
@@ -113,6 +135,10 @@ pub enum ControllerSubcommand {
         #[arg(long)]
         dry_run: bool,
     },
+    UninstallService {
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -128,7 +154,7 @@ pub enum AgentSubcommand {
         about = "Enroll this host as an agent",
         long_about = "Enroll this host with a controller using a one-time enrollment token.\n\nEnrollment writes the local agent identity, private key, labels, and pinned controller fingerprint under the selected data directory. Run this once before starting the agent.",
         visible_alias = "enroll",
-        after_help = "Examples:\n  sponzey agent init --url http://127.0.0.1:7700 --token <token> --name web-01 --labels role=web,env=dev\n  sponzey agent enroll --data-dir /var/lib/sponzey-fleet --url https://fleet.example.com --token <token> --name prod-web-01 --labels role=web,env=prod"
+        after_help = "Examples:\n  Local loopback development:\n    sponzey agent init --url http://127.0.0.1:7700 --token <token> --name web-01 --labels role=web,env=dev\n\n  Production HTTPS:\n    sponzey agent init --data-dir /var/lib/sponzey-fleet --url https://fleet.example.com --token <token> --name prod-web-01 --labels role=web,env=prod\n\n  HTTPS with a private CA:\n    sponzey agent init --data-dir /var/lib/sponzey-fleet --url https://fleet.example.com --tls-ca-cert /etc/sponzey/tls/ca.pem --token <token> --name prod-web-01"
     )]
     Init {
         #[arg(long, help = "Controller URL to enroll against")]
@@ -143,6 +169,11 @@ pub enum AgentSubcommand {
             help = "Comma-separated labels used for targeting, for example role=web,env=prod"
         )]
         labels: String,
+        #[arg(
+            long,
+            help = "Additional PEM CA certificate used to trust a private/self-signed controller TLS endpoint"
+        )]
+        tls_ca_cert: Option<PathBuf>,
         #[arg(long, default_value = ".sponzey", help = "Agent data directory")]
         data_dir: PathBuf,
     },
@@ -206,6 +237,11 @@ pub enum AgentSubcommand {
         #[arg(long, help = "Print the systemctl command without executing it")]
         dry_run: bool,
     },
+    #[command(about = "Disable and remove the installed agent systemd service")]
+    UninstallService {
+        #[arg(long, help = "Print the uninstall commands without executing them")]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -233,6 +269,25 @@ pub enum EnrollTokenSubcommand {
     Create {
         #[arg(long, default_value = "")]
         labels: String,
+        #[arg(long, default_value_t = 1)]
+        max_uses: u32,
+        #[arg(long, default_value_t = 3600)]
+        expires_in_seconds: u64,
+        #[arg(long)]
+        controller_url: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        print_init_command: bool,
+        #[arg(long, default_value = ".sponzey")]
+        data_dir: PathBuf,
+    },
+    List {
+        #[arg(long, default_value = ".sponzey")]
+        data_dir: PathBuf,
+    },
+    Revoke {
+        id: String,
         #[arg(long, default_value = ".sponzey")]
         data_dir: PathBuf,
     },
@@ -351,7 +406,7 @@ impl Display for CliError {
             Self::ControllerNotInitialized { data_dir } => {
                 write!(
                     formatter,
-                    "controller is not initialized for data dir: {}\n\nInitialize it once before starting the controller:\n\n  sponzey controller init --data-dir \"{}\"\n  sponzey controller start --host 127.0.0.1 --port 7700 --data-dir \"{}\" --dev-insecure-loopback\n\nIf you use local scripts:\n\n  ./scripts/run_controller.sh --host 127.0.0.1 --port 7700 --data-dir \"{}\" --dev-insecure-loopback",
+                    "controller is not initialized for data dir: {}\n\nInitialize it once before starting the controller:\n\n  sponzey controller init --data-dir \"{}\"\n  sponzey controller start --host 127.0.0.1 --port 7700 --data-dir \"{}\" --external-url http://127.0.0.1:7700 --dev-insecure-loopback\n\nIf you use local scripts:\n\n  ./scripts/run_controller.sh --host 127.0.0.1 --port 7700 --data-dir \"{}\" --external-url http://127.0.0.1:7700 --dev-insecure-loopback",
                     data_dir.display(),
                     data_dir.display(),
                     data_dir.display(),
@@ -467,7 +522,10 @@ fn execute_controller(command: ControllerCommand) -> Result<(), CliError> {
         ControllerSubcommand::Start {
             host,
             port,
+            external_url,
             db,
+            tls_cert,
+            tls_key,
             dev_insecure_loopback,
             data_dir,
         } => {
@@ -476,6 +534,9 @@ fn execute_controller(command: ControllerCommand) -> Result<(), CliError> {
             fleet_controller::start_controller_server(fleet_controller::ControllerServerConfig {
                 host,
                 port,
+                external_url,
+                tls_cert_path: tls_cert,
+                tls_key_path: tls_key,
                 data_dir,
                 database_path,
                 dev_insecure_loopback,
@@ -506,12 +567,23 @@ fn execute_controller(command: ControllerCommand) -> Result<(), CliError> {
         ControllerSubcommand::StartService { dry_run } => {
             start_systemd_service(ServiceRole::Controller, dry_run)
         }
+        ControllerSubcommand::UninstallService { dry_run } => {
+            uninstall_systemd_service(ServiceRole::Controller, dry_run)
+        }
     }
 }
 
 fn execute_enroll_token(command: EnrollTokenCommand) -> Result<(), CliError> {
     match command.command {
-        EnrollTokenSubcommand::Create { labels, data_dir } => {
+        EnrollTokenSubcommand::Create {
+            labels,
+            max_uses,
+            expires_in_seconds,
+            controller_url,
+            name,
+            print_init_command,
+            data_dir,
+        } => {
             fs::create_dir_all(controller_dir(&data_dir))?;
             let store = fleet_store::SqliteStore::open(controller_db_path(&data_dir))?;
             let token = prefixed_ulid("enroll")?;
@@ -520,10 +592,77 @@ fn execute_enroll_token(command: EnrollTokenCommand) -> Result<(), CliError> {
                 &token_id,
                 &fleet_controller::hash_token(&token),
                 &labels,
-                SystemTime::now() + Duration::from_secs(3600),
-                1,
+                SystemTime::now() + Duration::from_secs(expires_in_seconds),
+                max_uses,
             )?;
-            println!("{token}");
+            store.write_audit_event(fleet_domain::AuditEvent {
+                category: fleet_domain::AuditCategory::Security,
+                action: "enrollment_token_created".to_owned(),
+                actor: fleet_domain::AuditActor::new("cli"),
+                target: fleet_domain::AuditTarget::new(&token_id),
+                value: fleet_domain::AuditValue::SecretRef(format!(
+                    "labels={},max_uses={},expires_in_seconds={}",
+                    labels, max_uses, expires_in_seconds
+                )),
+                occurred_at: SystemTime::now(),
+            })?;
+            if print_init_command {
+                let controller_url = controller_url.ok_or_else(|| {
+                    CliError::Http(
+                        "--controller-url is required with --print-init-command".to_owned(),
+                    )
+                })?;
+                let name = name.unwrap_or_else(|| "<agent-name>".to_owned());
+                println!(
+                    "sponzey agent init --url {} --token {} --name {} --labels {}",
+                    shell_arg(&controller_url),
+                    shell_arg(&token),
+                    shell_arg(&name),
+                    shell_arg(&labels)
+                );
+            } else {
+                println!("{token}");
+            }
+            Ok(())
+        }
+        EnrollTokenSubcommand::List { data_dir } => {
+            let store = fleet_store::SqliteStore::open(controller_db_path(&data_dir))?;
+            let records = store.list_enrollment_tokens()?;
+            if records.is_empty() {
+                println!("no enrollment tokens");
+                return Ok(());
+            }
+            println!("id\tlabels\tmax_uses\tused_count\tremaining_uses\trevoked\texpires_at_epoch");
+            for record in records {
+                let remaining_uses = record.max_uses.saturating_sub(record.used_count);
+                println!(
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    record.id,
+                    record.default_labels,
+                    record.max_uses,
+                    record.used_count,
+                    remaining_uses,
+                    record.revoked,
+                    epoch_seconds(record.expires_at)
+                );
+            }
+            Ok(())
+        }
+        EnrollTokenSubcommand::Revoke { id, data_dir } => {
+            let store = fleet_store::SqliteStore::open(controller_db_path(&data_dir))?;
+            if store.revoke_enrollment_token(&id)? {
+                store.write_audit_event(fleet_domain::AuditEvent {
+                    category: fleet_domain::AuditCategory::Security,
+                    action: "enrollment_token_revoked".to_owned(),
+                    actor: fleet_domain::AuditActor::new("cli"),
+                    target: fleet_domain::AuditTarget::new(&id),
+                    value: fleet_domain::AuditValue::SecretRef("revoked".to_owned()),
+                    occurred_at: SystemTime::now(),
+                })?;
+                println!("revoked enrollment token: {id}");
+            } else {
+                println!("enrollment token not found: {id}");
+            }
             Ok(())
         }
     }
@@ -536,13 +675,19 @@ fn execute_agent(command: AgentCommand) -> Result<(), CliError> {
             token,
             name,
             labels,
+            tls_ca_cert,
             data_dir,
         } => {
             fs::create_dir_all(agent_dir(&data_dir))?;
             let agent_id = format!("agent-{name}");
             let key_pair = fleet_core::generate_agent_key_pair()?;
+            let tls_ca_cert = tls_ca_cert
+                .as_deref()
+                .map(canonicalize_tls_ca_cert)
+                .transpose()?;
             let response = enroll_agent_via_controller(
                 &url,
+                tls_ca_cert.as_deref(),
                 &fleet_controller::EnrollAgentRequest {
                     token: token.clone(),
                     agent_id,
@@ -552,9 +697,14 @@ fn execute_agent(command: AgentCommand) -> Result<(), CliError> {
                     labels: parse_labels(&labels)?,
                 },
             )?;
+            let tls_ca_cert_line = tls_ca_cert
+                .as_ref()
+                .map(|path| format!("tls_ca_cert={}\n", path.display()))
+                .unwrap_or_default();
             let config = format!(
-                "url={}\nagent_id={}\nname={}\nlabels={}\nfingerprint={}\ncontroller_fingerprint={}\n",
+                "url={}\n{}agent_id={}\nname={}\nlabels={}\nfingerprint={}\ncontroller_fingerprint={}\n",
                 url,
+                tls_ca_cert_line,
                 response.agent_id,
                 name,
                 labels,
@@ -632,6 +782,9 @@ fn execute_agent(command: AgentCommand) -> Result<(), CliError> {
         }
         AgentSubcommand::StartService { dry_run } => {
             start_systemd_service(ServiceRole::Agent, dry_run)
+        }
+        AgentSubcommand::UninstallService { dry_run } => {
+            uninstall_systemd_service(ServiceRole::Agent, dry_run)
         }
     }
 }
@@ -1108,6 +1261,9 @@ fn execute_demo(command: DemoCommand) -> Result<(), CliError> {
             fleet_controller::ControllerServerConfig {
                 host: "127.0.0.1".to_owned(),
                 port,
+                external_url: Some(format!("http://127.0.0.1:{port}")),
+                tls_cert_path: None,
+                tls_key_path: None,
                 data_dir: server_data_dir,
                 database_path: None,
                 dev_insecure_loopback: true,
@@ -1158,6 +1314,7 @@ fn enroll_demo_agent(
     let key_pair = fleet_core::generate_agent_key_pair()?;
     let response = enroll_agent_via_controller(
         controller_url,
+        None,
         &fleet_controller::EnrollAgentRequest {
             token: token.to_owned(),
             agent_id: "agent-web-01".to_owned(),
@@ -1287,27 +1444,34 @@ fn http_request_url(
     bearer_token: Option<&str>,
     body: Option<&str>,
 ) -> Result<String, CliError> {
-    let (host, port) = parse_http_url(url)?;
+    let endpoint = parse_controller_url(url)?;
     let body = body.unwrap_or_default();
-    let auth_header = bearer_token
-        .map(|token| format!("Authorization: Bearer {token}\r\n"))
-        .unwrap_or_default();
-    let content_headers = if body.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "Content-Type: application/json\r\nContent-Length: {}\r\n",
-            body.len()
-        )
-    };
-    let mut stream = TcpStream::connect(format!("{host}:{port}"))?;
-    let request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {host}:{port}\r\n{auth_header}{content_headers}Connection: close\r\n\r\n{body}"
-    );
-    stream.write_all(request.as_bytes())?;
-    let mut response = String::new();
-    stream.read_to_string(&mut response)?;
-    Ok(response)
+    let method = reqwest::Method::from_bytes(method.as_bytes())
+        .map_err(|error| CliError::Http(error.to_string()))?;
+    let client = reqwest::blocking::Client::new();
+    let mut request = client.request(method, endpoint.api_url(path));
+    if let Some(token) = bearer_token {
+        request = request.bearer_auth(token);
+    }
+    if !body.is_empty() {
+        request = request
+            .header("content-type", "application/json")
+            .body(body.to_owned());
+    }
+    let response = request
+        .send()
+        .map_err(|error| CliError::Http(error.to_string()))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .map_err(|error| CliError::Http(error.to_string()))?;
+    Ok(format!(
+        "HTTP/1.1 {} {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status.as_u16(),
+        status.canonical_reason().unwrap_or("Unknown"),
+        body.len(),
+        body
+    ))
 }
 
 fn free_loopback_port() -> Result<u16, CliError> {
@@ -1455,6 +1619,14 @@ fn render_systemctl_command(action: &str, role: ServiceRole) -> String {
     format!("systemctl {action} {}", service_unit_name(role))
 }
 
+fn render_uninstall_service_commands(role: ServiceRole) -> Vec<String> {
+    vec![
+        render_systemctl_command("disable --now", role),
+        format!("rm {}", systemd_arg(&systemd_unit_path(role))),
+        "systemctl daemon-reload".to_owned(),
+    ]
+}
+
 fn start_systemd_service(role: ServiceRole, dry_run: bool) -> Result<(), CliError> {
     if dry_run {
         println!("{}", render_systemctl_command("start", role));
@@ -1470,6 +1642,22 @@ fn install_systemd_service(role: ServiceRole, unit: &str) -> Result<(), CliError
     fs::write(&path, unit)?;
     run_systemctl(&["daemon-reload"])?;
     run_systemctl(&["enable", service_unit_name(role)])
+}
+
+fn uninstall_systemd_service(role: ServiceRole, dry_run: bool) -> Result<(), CliError> {
+    if dry_run {
+        for command in render_uninstall_service_commands(role) {
+            println!("{command}");
+        }
+        return Ok(());
+    }
+    ensure_systemd_operation_allowed()?;
+    run_systemctl(&["disable", "--now", service_unit_name(role)])?;
+    let path = systemd_unit_path(role);
+    if path.exists() {
+        fs::remove_file(path)?;
+    }
+    run_systemctl(&["daemon-reload"])
 }
 
 fn ensure_systemd_operation_allowed() -> Result<(), CliError> {
@@ -1531,6 +1719,23 @@ fn systemd_arg(path: &Path) -> String {
         return value;
     }
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn shell_arg(value: &str) -> String {
+    if value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '-' | '.' | ':' | '=' | ','))
+    {
+        return value.to_owned();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn epoch_seconds(value: SystemTime) -> u64 {
+    value
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn ensure_controller_identity(data_dir: &Path) -> Result<String, CliError> {
@@ -1615,6 +1820,33 @@ fn validate_secure_file_permissions(path: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
+fn canonicalize_tls_ca_cert(path: &Path) -> Result<PathBuf, CliError> {
+    let path = fs::canonicalize(path)?;
+    let certificates = load_pem_certificates(&path)?;
+    if certificates.is_empty() {
+        return Err(CliError::Http(format!(
+            "TLS CA certificate file has no certificates: {}",
+            path.display()
+        )));
+    }
+    Ok(path)
+}
+
+fn load_pem_certificates(
+    path: &Path,
+) -> Result<Vec<tokio_rustls::rustls::pki_types::CertificateDer<'static>>, CliError> {
+    let file = fs::File::open(path)?;
+    let mut reader = BufReader::new(file);
+    rustls_pemfile::certs(&mut reader)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            CliError::Http(format!(
+                "failed to parse TLS CA certificate file {}: {error}",
+                path.display()
+            ))
+        })
+}
+
 fn parse_labels(labels: &str) -> Result<Vec<fleet_controller::EnrollAgentLabel>, CliError> {
     labels
         .split(',')
@@ -1633,74 +1865,254 @@ fn parse_labels(labels: &str) -> Result<Vec<fleet_controller::EnrollAgentLabel>,
 
 fn enroll_agent_via_controller(
     url: &str,
+    tls_ca_cert: Option<&Path>,
     request: &fleet_controller::EnrollAgentRequest,
 ) -> Result<fleet_controller::EnrollAgentResponse, CliError> {
-    let (host, port) = parse_http_url(url)?;
     let body = serde_json::to_string(request).map_err(|error| CliError::Http(error.to_string()))?;
-    let mut stream = TcpStream::connect(format!("{host}:{port}"))?;
-    let http_request = format!(
-        "POST /api/agents/enroll HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    stream.write_all(http_request.as_bytes())?;
-
-    let mut response = String::new();
-    stream.read_to_string(&mut response)?;
-    if !response.starts_with("HTTP/1.1 201") {
-        return Err(CliError::Http(
-            response
-                .lines()
-                .next()
-                .unwrap_or("request failed")
-                .to_owned(),
-        ));
+    let endpoint = parse_controller_url(url)?;
+    let response = reqwest_client(tls_ca_cert)?
+        .post(endpoint.api_url("/api/agents/enroll"))
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .map_err(|error| CliError::Http(error.to_string()))?;
+    let status = response.status();
+    if status.as_u16() != 201 {
+        return Err(CliError::Http(format!(
+            "HTTP/1.1 {} {}",
+            status.as_u16(),
+            status.canonical_reason().unwrap_or("request failed")
+        )));
     }
-    let body = response.split("\r\n\r\n").nth(1).unwrap_or_default();
-    serde_json::from_str(body).map_err(|error| CliError::Http(error.to_string()))
+    response
+        .json()
+        .map_err(|error| CliError::Http(error.to_string()))
 }
 
 fn controller_identity_via_controller(
     url: &str,
+    tls_ca_cert: Option<&Path>,
 ) -> Result<fleet_controller::ControllerIdentityResponse, CliError> {
-    let (host, port) = parse_http_url(url)?;
-    let mut stream = TcpStream::connect(format!("{host}:{port}"))?;
-    let http_request = format!(
-        "GET /api/controller/identity HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n"
-    );
-    stream.write_all(http_request.as_bytes())?;
-
-    let mut response = String::new();
-    stream.read_to_string(&mut response)?;
-    if !response.starts_with("HTTP/1.1 200") {
-        return Err(CliError::Http(
-            response
-                .lines()
-                .next()
-                .unwrap_or("request failed")
-                .to_owned(),
-        ));
+    let endpoint = parse_controller_url(url)?;
+    let response = reqwest_client(tls_ca_cert)?
+        .get(endpoint.api_url("/api/controller/identity"))
+        .send()
+        .map_err(|error| CliError::Http(error.to_string()))?;
+    let status = response.status();
+    if status.as_u16() != 200 {
+        return Err(CliError::Http(format!(
+            "HTTP/1.1 {} {}",
+            status.as_u16(),
+            status.canonical_reason().unwrap_or("request failed")
+        )));
     }
-    let body = response.split("\r\n\r\n").nth(1).unwrap_or_default();
-    serde_json::from_str(body).map_err(|error| CliError::Http(error.to_string()))
+    response
+        .json()
+        .map_err(|error| CliError::Http(error.to_string()))
 }
 
-fn parse_http_url(url: &str) -> Result<(String, u16), CliError> {
-    let rest = url.strip_prefix("http://").ok_or_else(|| {
-        CliError::Http("only http:// controller URL is supported in MVP".to_owned())
-    })?;
-    let host_port = rest.split('/').next().unwrap_or(rest);
-    let (host, port) = host_port
-        .split_once(':')
-        .ok_or_else(|| CliError::Http("controller URL must include port".to_owned()))?;
-    let port = port
-        .parse::<u16>()
-        .map_err(|_| CliError::Http("invalid controller port".to_owned()))?;
-    if !is_loopback_host(host) {
+fn reqwest_client(tls_ca_cert: Option<&Path>) -> Result<reqwest::blocking::Client, CliError> {
+    let mut builder = reqwest::blocking::Client::builder();
+    if let Some(path) = tls_ca_cert {
+        let certificate = reqwest::Certificate::from_pem(&fs::read(path)?)
+            .map_err(|error| CliError::Http(format!("invalid TLS CA certificate: {error}")))?;
+        builder = builder.add_root_certificate(certificate);
+    }
+    builder
+        .build()
+        .map_err(|error| CliError::Http(error.to_string()))
+}
+
+fn connect_agent_websocket(
+    ws_url: &str,
+    endpoint: &ControllerEndpoint,
+    tls_ca_cert: Option<&Path>,
+) -> Result<
+    (
+        tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<TcpStream>>,
+        tungstenite::handshake::client::Response,
+    ),
+    CliError,
+> {
+    if tls_ca_cert.is_none() {
+        return tungstenite::connect(ws_url).map_err(|error| CliError::Http(error.to_string()));
+    }
+
+    let request = ws_url
+        .into_client_request()
+        .map_err(|error| CliError::Http(error.to_string()))?;
+    let stream = TcpStream::connect(format!(
+        "{}:{}",
+        display_socket_host(&endpoint.host),
+        endpoint.port
+    ))?;
+    stream.set_nodelay(true)?;
+    let connector = match endpoint.scheme {
+        ControllerUrlScheme::Http => None,
+        ControllerUrlScheme::Https => Some(Connector::Rustls(build_websocket_tls_config(
+            tls_ca_cert.expect("checked above"),
+        )?)),
+    };
+
+    tungstenite::client_tls_with_config(request, stream, None, connector)
+        .map_err(|error| CliError::Http(error.to_string()))
+}
+
+fn build_websocket_tls_config(tls_ca_cert: &Path) -> Result<Arc<RustlsClientConfig>, CliError> {
+    ensure_rustls_crypto_provider();
+    let mut root_store = RootCertStore::empty();
+    let mut added = 0_usize;
+    for certificate in load_pem_certificates(tls_ca_cert)? {
+        root_store
+            .add(certificate)
+            .map_err(|error| CliError::Http(format!("invalid TLS CA certificate: {error}")))?;
+        added += 1;
+    }
+    if added == 0 {
+        return Err(CliError::Http(format!(
+            "TLS CA certificate file has no certificates: {}",
+            tls_ca_cert.display()
+        )));
+    }
+    Ok(Arc::new(
+        RustlsClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth(),
+    ))
+}
+
+fn ensure_rustls_crypto_provider() {
+    let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ControllerUrlScheme {
+    Http,
+    Https,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ControllerEndpoint {
+    scheme: ControllerUrlScheme,
+    host: String,
+    port: u16,
+}
+
+impl ControllerEndpoint {
+    fn api_url(&self, path: &str) -> String {
+        let scheme = match self.scheme {
+            ControllerUrlScheme::Http => "http",
+            ControllerUrlScheme::Https => "https",
+        };
+        let host = display_url_host(&self.host);
+        format!("{scheme}://{host}:{}{}", self.port, normalized_path(path))
+    }
+
+    fn websocket_url(&self, path: &str) -> String {
+        let scheme = match self.scheme {
+            ControllerUrlScheme::Http => "ws",
+            ControllerUrlScheme::Https => "wss",
+        };
+        let host = display_url_host(&self.host);
+        format!("{scheme}://{host}:{}{}", self.port, normalized_path(path))
+    }
+}
+
+fn normalized_path(path: &str) -> String {
+    if path.starts_with('/') {
+        path.to_owned()
+    } else {
+        format!("/{path}")
+    }
+}
+
+fn display_url_host(host: &str) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.to_owned()
+    }
+}
+
+fn display_socket_host(host: &str) -> String {
+    display_url_host(host)
+}
+
+fn parse_controller_url(url: &str) -> Result<ControllerEndpoint, CliError> {
+    let (scheme, rest) = if let Some(rest) = url.strip_prefix("http://") {
+        (ControllerUrlScheme::Http, rest)
+    } else if let Some(rest) = url.strip_prefix("https://") {
+        (ControllerUrlScheme::Https, rest)
+    } else {
+        return Err(CliError::Http(
+            "controller URL must start with https://, except loopback dev http://".to_owned(),
+        ));
+    };
+
+    let authority = rest.split('/').next().unwrap_or(rest);
+    if authority.is_empty() {
+        return Err(CliError::Http(
+            "controller URL host cannot be empty".to_owned(),
+        ));
+    }
+    let (host, port) = parse_controller_authority(authority, scheme)?;
+    if scheme == ControllerUrlScheme::Http && !is_loopback_host(&host) {
         return Err(CliError::Http(
             "insecure http controller URL is only allowed for loopback hosts".to_owned(),
         ));
     }
-    Ok((host.to_owned(), port))
+    Ok(ControllerEndpoint { scheme, host, port })
+}
+
+fn parse_controller_authority(
+    authority: &str,
+    scheme: ControllerUrlScheme,
+) -> Result<(String, u16), CliError> {
+    if let Some(stripped) = authority.strip_prefix('[') {
+        let (host, rest) = stripped
+            .split_once(']')
+            .ok_or_else(|| CliError::Http("invalid bracketed IPv6 host".to_owned()))?;
+        let port = if let Some(port) = rest.strip_prefix(':') {
+            parse_controller_port(port)?
+        } else {
+            default_controller_port(scheme)
+        };
+        return Ok((host.to_owned(), port));
+    }
+
+    let colon_count = authority
+        .chars()
+        .filter(|character| *character == ':')
+        .count();
+    if colon_count > 1 {
+        return Ok((authority.to_owned(), default_controller_port(scheme)));
+    }
+
+    if let Some((host, port)) = authority.split_once(':') {
+        if host.is_empty() {
+            return Err(CliError::Http(
+                "controller URL host cannot be empty".to_owned(),
+            ));
+        }
+        return Ok((host.to_owned(), parse_controller_port(port)?));
+    }
+
+    Ok((authority.to_owned(), default_controller_port(scheme)))
+}
+
+fn parse_controller_port(port: &str) -> Result<u16, CliError> {
+    if port.is_empty() {
+        return Err(CliError::Http("controller port cannot be empty".to_owned()));
+    }
+    port.parse::<u16>()
+        .map_err(|_| CliError::Http("invalid controller port".to_owned()))
+}
+
+fn default_controller_port(scheme: ControllerUrlScheme) -> u16 {
+    match scheme {
+        ControllerUrlScheme::Http => 80,
+        ControllerUrlScheme::Https => 443,
+    }
 }
 
 fn is_loopback_host(host: &str) -> bool {
@@ -1710,6 +2122,7 @@ fn is_loopback_host(host: &str) -> bool {
 #[derive(Debug, Clone)]
 struct LocalAgentConfig {
     url: String,
+    tls_ca_cert: Option<PathBuf>,
     agent_id: String,
     fingerprint: String,
     private_key: String,
@@ -1732,6 +2145,11 @@ fn read_agent_config(path: &Path) -> Result<LocalAgentConfig, CliError> {
             .map(str::to_owned)
             .ok_or_else(|| CliError::Http(format!("missing agent config key: {key}")))
     };
+    let optional_value = |key: &str| {
+        body.lines()
+            .find_map(|line| line.strip_prefix(&format!("{key}=")))
+            .map(PathBuf::from)
+    };
     let private_key_path = path
         .parent()
         .unwrap_or_else(|| Path::new("."))
@@ -1740,6 +2158,7 @@ fn read_agent_config(path: &Path) -> Result<LocalAgentConfig, CliError> {
     let private_key = fs::read_to_string(private_key_path)?.trim().to_owned();
     Ok(LocalAgentConfig {
         url: value("url")?,
+        tls_ca_cert: optional_value("tls_ca_cert"),
         agent_id: value("agent_id")?,
         fingerprint: value("fingerprint")?,
         private_key,
@@ -1748,7 +2167,7 @@ fn read_agent_config(path: &Path) -> Result<LocalAgentConfig, CliError> {
 }
 
 fn validate_pinned_controller(config: &LocalAgentConfig) -> Result<(), CliError> {
-    let identity = controller_identity_via_controller(&config.url)?;
+    let identity = controller_identity_via_controller(&config.url, config.tls_ca_cert.as_deref())?;
     validate_pinned_controller_identity(config, &identity)
 }
 
@@ -1756,12 +2175,30 @@ fn validate_pinned_controller_identity(
     config: &LocalAgentConfig,
     identity: &fleet_controller::ControllerIdentityResponse,
 ) -> Result<(), CliError> {
-    if identity.controller_fingerprint != config.controller_fingerprint {
-        return Err(CliError::Http(
-            "controller fingerprint changed; explicit re-enroll is required".to_owned(),
-        ));
+    let observed_fingerprint = controller_signing_fingerprint(identity);
+    if observed_fingerprint != config.controller_fingerprint {
+        return Err(CliError::Http(format!(
+            "controller signing fingerprint changed from {} to {}; explicit re-enroll is required because this may indicate controller key rotation or a security issue",
+            config.controller_fingerprint, observed_fingerprint
+        )));
     }
     Ok(())
+}
+
+fn controller_signing_fingerprint(identity: &fleet_controller::ControllerIdentityResponse) -> &str {
+    if identity.controller_signing_fingerprint.is_empty() {
+        &identity.controller_fingerprint
+    } else {
+        &identity.controller_signing_fingerprint
+    }
+}
+
+fn controller_signing_public_key(identity: &fleet_controller::ControllerIdentityResponse) -> &str {
+    if identity.controller_signing_public_key.is_empty() {
+        &identity.controller_public_key
+    } else {
+        &identity.controller_signing_public_key
+    }
 }
 
 fn run_agent_heartbeat_loop(
@@ -1799,12 +2236,12 @@ fn reconnect_backoff(attempt: u32) -> Duration {
 }
 
 fn run_agent_heartbeat_once(config: &LocalAgentConfig) -> Result<(), CliError> {
-    let identity = controller_identity_via_controller(&config.url)?;
+    let identity = controller_identity_via_controller(&config.url, config.tls_ca_cert.as_deref())?;
     validate_pinned_controller_identity(config, &identity)?;
-    let (host, port) = parse_http_url(&config.url)?;
-    let ws_url = format!("ws://{host}:{port}/api/agents/ws");
+    let endpoint = parse_controller_url(&config.url)?;
+    let ws_url = endpoint.websocket_url("/api/agents/ws");
     let (mut socket, _) =
-        tungstenite::connect(ws_url.as_str()).map_err(|error| CliError::Http(error.to_string()))?;
+        connect_agent_websocket(&ws_url, &endpoint, config.tls_ca_cert.as_deref())?;
     let correlation_id = prefixed_ulid("corr")?;
 
     let hello = fleet_protocol::WireMessage::new(
@@ -1873,7 +2310,7 @@ fn run_agent_heartbeat_once(config: &LocalAgentConfig) -> Result<(), CliError> {
     read_and_handle_task_assignment(
         &mut socket,
         config,
-        &identity.controller_public_key,
+        controller_signing_public_key(&identity),
         &correlation_id,
     )?;
 
@@ -2633,6 +3070,68 @@ mod tests {
     }
 
     #[test]
+    fn parses_controller_start_external_https_url() {
+        let cli = Cli::try_parse_from([
+            "sponzey",
+            "controller",
+            "start",
+            "--host",
+            "0.0.0.0",
+            "--external-url",
+            "https://fleet.example.com",
+        ])
+        .expect("valid command");
+
+        let Command::Controller(ControllerCommand {
+            command:
+                ControllerSubcommand::Start {
+                    host, external_url, ..
+                },
+        }) = cli.command
+        else {
+            panic!("expected controller start command");
+        };
+
+        assert_eq!(host, "0.0.0.0");
+        assert_eq!(external_url.as_deref(), Some("https://fleet.example.com"));
+    }
+
+    #[test]
+    fn parses_controller_start_builtin_tls_paths() {
+        let cli = Cli::try_parse_from([
+            "sponzey",
+            "controller",
+            "start",
+            "--external-url",
+            "https://fleet.example.com",
+            "--tls-cert",
+            "/etc/sponzey/tls/fullchain.pem",
+            "--tls-key",
+            "/etc/sponzey/tls/privkey.pem",
+        ])
+        .expect("valid command");
+
+        let Command::Controller(ControllerCommand {
+            command:
+                ControllerSubcommand::Start {
+                    tls_cert, tls_key, ..
+                },
+        }) = cli.command
+        else {
+            panic!("expected controller start command");
+        };
+
+        assert_eq!(
+            tls_cert.as_deref(),
+            Some(Path::new("/etc/sponzey/tls/fullchain.pem"))
+        );
+        assert_eq!(
+            tls_key.as_deref(),
+            Some(Path::new("/etc/sponzey/tls/privkey.pem"))
+        );
+    }
+
+    #[test]
     fn controller_start_preflight_explains_missing_init() {
         let data_dir = unique_demo_dir();
         let error = ensure_controller_initialized_for_start(&data_dir)
@@ -2646,6 +3145,93 @@ mod tests {
         assert!(message.contains("controller is not initialized"));
         assert!(message.contains("sponzey controller init --data-dir"));
         assert!(message.contains("./scripts/run_controller.sh"));
+    }
+
+    #[test]
+    fn enroll_token_create_persists_scope_and_audit() {
+        let data_dir = unique_test_dir("enroll-token-create");
+        let cli = Cli::try_parse_from([
+            "sponzey",
+            "enroll-token",
+            "create",
+            "--data-dir",
+            data_dir.to_str().unwrap(),
+            "--labels",
+            "role=web,env=prod",
+            "--max-uses",
+            "2",
+            "--expires-in-seconds",
+            "120",
+            "--controller-url",
+            "https://fleet.example.com",
+            "--name",
+            "web-01",
+            "--print-init-command",
+        ])
+        .expect("valid command");
+
+        execute(cli).expect("token create should succeed");
+
+        let store = fleet_store::SqliteStore::open(controller_db_path(&data_dir)).unwrap();
+        let records = store.list_enrollment_tokens().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].default_labels, "role=web,env=prod");
+        assert_eq!(records[0].max_uses, 2);
+        assert_eq!(records[0].used_count, 0);
+        assert!(!records[0].revoked);
+        let audits = store
+            .list_audit_events_by_category(fleet_domain::AuditCategory::Security, 10)
+            .unwrap();
+        assert!(
+            audits
+                .iter()
+                .any(|event| event.action == "enrollment_token_created")
+        );
+        assert!(
+            audits
+                .iter()
+                .all(|event| !format!("{:?}", event.value).contains("enroll-"))
+        );
+    }
+
+    #[test]
+    fn enroll_token_revoke_updates_state_and_audit() {
+        let data_dir = unique_test_dir("enroll-token-revoke");
+        fs::create_dir_all(controller_dir(&data_dir)).unwrap();
+        let store = fleet_store::SqliteStore::open(controller_db_path(&data_dir)).unwrap();
+        store
+            .insert_enrollment_token_hash(
+                "et-1",
+                &fleet_controller::hash_token("raw-token"),
+                "role=web",
+                SystemTime::now() + Duration::from_secs(60),
+                1,
+            )
+            .unwrap();
+        drop(store);
+
+        let cli = Cli::try_parse_from([
+            "sponzey",
+            "enroll-token",
+            "revoke",
+            "et-1",
+            "--data-dir",
+            data_dir.to_str().unwrap(),
+        ])
+        .expect("valid command");
+        execute(cli).expect("token revoke should succeed");
+
+        let store = fleet_store::SqliteStore::open(controller_db_path(&data_dir)).unwrap();
+        let records = store.list_enrollment_tokens().unwrap();
+        assert!(records[0].revoked);
+        let audits = store
+            .list_audit_events_by_category(fleet_domain::AuditCategory::Security, 10)
+            .unwrap();
+        assert!(
+            audits
+                .iter()
+                .any(|event| event.action == "enrollment_token_revoked")
+        );
     }
 
     #[test]
@@ -2736,6 +3322,22 @@ mod tests {
         assert_eq!(
             render_systemctl_command("start", ServiceRole::Agent),
             "systemctl start sponzey-fleet-agent.service"
+        );
+    }
+
+    #[test]
+    fn agent_uninstall_service_dry_run_renders_safe_commands() {
+        let cli =
+            Cli::try_parse_from(["sponzey", "agent", "uninstall-service", "--dry-run"]).unwrap();
+
+        assert!(execute(cli).is_ok());
+        assert_eq!(
+            render_uninstall_service_commands(ServiceRole::Agent),
+            vec![
+                "systemctl disable --now sponzey-fleet-agent.service".to_owned(),
+                "rm /etc/systemd/system/sponzey-fleet-agent.service".to_owned(),
+                "systemctl daemon-reload".to_owned(),
+            ]
         );
     }
 
@@ -3169,6 +3771,36 @@ postgresql.service loaded failed failed PostgreSQL database server
     }
 
     #[test]
+    fn agent_init_parses_tls_ca_cert() {
+        let cli = Cli::try_parse_from([
+            "sponzey",
+            "agent",
+            "init",
+            "--url",
+            "https://fleet.example.com",
+            "--tls-ca-cert",
+            "/etc/sponzey/tls/ca.pem",
+            "--token",
+            "token-1",
+            "--name",
+            "web-01",
+        ])
+        .expect("agent init should parse");
+
+        let Command::Agent(AgentCommand {
+            command: AgentSubcommand::Init { tls_ca_cert, .. },
+        }) = cli.command
+        else {
+            panic!("expected agent init command");
+        };
+
+        assert_eq!(
+            tls_ca_cert.as_deref(),
+            Some(Path::new("/etc/sponzey/tls/ca.pem"))
+        );
+    }
+
+    #[test]
     fn agent_enroll_remains_alias_for_init() {
         let cli = Cli::try_parse_from([
             "sponzey",
@@ -3372,7 +4004,32 @@ postgresql.service loaded failed failed PostgreSQL database server
     #[test]
     fn rejects_non_loopback_insecure_controller_url() {
         assert!(matches!(
-            parse_http_url("http://10.0.0.5:7700"),
+            parse_controller_url("http://10.0.0.5:7700"),
+            Err(CliError::Http(_))
+        ));
+    }
+
+    #[test]
+    fn parses_https_controller_url_for_remote_agent() {
+        let endpoint = parse_controller_url("https://fleet.example.com").unwrap();
+
+        assert_eq!(endpoint.scheme, ControllerUrlScheme::Https);
+        assert_eq!(endpoint.host, "fleet.example.com");
+        assert_eq!(endpoint.port, 443);
+        assert_eq!(
+            endpoint.api_url("/api/controller/identity"),
+            "https://fleet.example.com:443/api/controller/identity"
+        );
+        assert_eq!(
+            endpoint.websocket_url("/api/agents/ws"),
+            "wss://fleet.example.com:443/api/agents/ws"
+        );
+    }
+
+    #[test]
+    fn rejects_wildcard_host_as_agent_controller_url() {
+        assert!(matches!(
+            parse_controller_url("http://0.0.0.0:7700"),
             Err(CliError::Http(_))
         ));
     }
@@ -3397,8 +4054,28 @@ postgresql.service loaded failed failed PostgreSQL database server
         let config = read_agent_config(&dir.join("agent.conf")).unwrap();
 
         assert_eq!(config.agent_id, "agent-web-01");
+        assert!(config.tls_ca_cert.is_none());
         assert_eq!(config.private_key, "private-key-1");
         assert_eq!(config.controller_fingerprint, "controller-fp-1");
+    }
+
+    #[test]
+    fn reads_agent_config_with_tls_ca_cert() {
+        let dir = unique_test_dir("secure-agent-config-tls-ca");
+        fs::create_dir_all(&dir).unwrap();
+        write_secure_file(
+            &dir.join("agent.conf"),
+            "url=https://127.0.0.1:7700\ntls_ca_cert=/tmp/sponzey-ca.pem\nagent_id=agent-web-01\nfingerprint=fp-1\ncontroller_fingerprint=controller-fp-1\n",
+        )
+        .unwrap();
+        write_secure_file(&dir.join("agent_private.key"), "private-key-1\n").unwrap();
+
+        let config = read_agent_config(&dir.join("agent.conf")).unwrap();
+
+        assert_eq!(
+            config.tls_ca_cert.as_deref(),
+            Some(Path::new("/tmp/sponzey-ca.pem"))
+        );
     }
 
     #[cfg(unix)]
@@ -3425,6 +4102,7 @@ postgresql.service loaded failed failed PostgreSQL database server
     fn rejects_changed_controller_fingerprint_without_reenroll() {
         let config = LocalAgentConfig {
             url: "http://127.0.0.1:7700".to_owned(),
+            tls_ca_cert: None,
             agent_id: "agent-web-01".to_owned(),
             fingerprint: "agent-fp-1".to_owned(),
             private_key: "private-key-1".to_owned(),
@@ -3433,6 +4111,9 @@ postgresql.service loaded failed failed PostgreSQL database server
         let identity = fleet_controller::ControllerIdentityResponse {
             controller_public_key: "controller-public-key-2".to_owned(),
             controller_fingerprint: "controller-fp-2".to_owned(),
+            controller_signing_public_key: "controller-public-key-2".to_owned(),
+            controller_signing_fingerprint: "controller-fp-2".to_owned(),
+            tls_endpoint: fleet_controller::ControllerTlsEndpointResponse::default(),
         };
 
         assert!(matches!(

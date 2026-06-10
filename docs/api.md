@@ -86,6 +86,16 @@ POST /api/enrollment-tokens
 Authorization: Bearer <admin-token>
 ```
 
+요청 body는 비워도 되며, 비어 있으면 `max_uses=1`, `expires_in_seconds=3600`, empty labels를 기본값으로 사용한다.
+
+```json
+{
+  "labels": "role=web,env=prod",
+  "max_uses": 1,
+  "expires_in_seconds": 3600
+}
+```
+
 응답은 raw enrollment token을 1회 포함한다.
 
 ```json
@@ -111,7 +121,9 @@ Authorization: Bearer <admin-token>
     "default_labels": "",
     "max_uses": 1,
     "used_count": 0,
-    "revoked": false
+    "remaining_uses": 1,
+    "revoked": false,
+    "expires_at_epoch": 1710003600
   }
 ]
 ```
@@ -332,10 +344,16 @@ Authorization: Bearer <admin-token>
     "labels": [
       {"key": "role", "value": "web"}
     ],
-    "last_seen_at_ms": 1710000000000
+    "last_seen_at_ms": 1710000000000,
+    "last_seen_age_seconds": 12,
+    "hostname": "web-01",
+    "os": "linux",
+    "arch": "x86_64"
   }
 ]
 ```
+
+`hostname`, `os`, `arch`는 최신 facts snapshot에서 추출한 얇은 inventory summary다. facts가 아직 없으면 `null`이다. `last_seen_age_seconds`는 response 생성 시점 기준의 health 판단 보조값이며, `last_seen_at_ms`가 없으면 `null`이다.
 
 ### Detail
 

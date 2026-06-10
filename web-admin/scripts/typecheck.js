@@ -58,6 +58,9 @@ for (const [index, endpoint] of schema.endpoints.entries()) {
   if (endpoint.method === "POST") {
     assert(call.options.method === "POST", `${endpoint.name} must use POST`);
     assert(typeof call.options.body === "string", `${endpoint.name} must JSON encode request bodies`);
+  } else if (endpoint.method === "DELETE") {
+    assert(call.options.method === "DELETE", `${endpoint.name} must use DELETE`);
+    assert(!call.options.body, `${endpoint.name} must not send a request body`);
   } else {
     assert(!call.options.method, `${endpoint.name} must use default GET`);
   }

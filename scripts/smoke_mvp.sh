@@ -35,7 +35,7 @@ if [ "$i" -eq 50 ]; then
 fi
 
 TOKEN="$("$BIN" enroll-token create --data-dir "$WORK_DIR" --labels role=web,env=dev)"
-"$BIN" agent enroll --data-dir "$WORK_DIR" --url http://127.0.0.1:7700 --token "$TOKEN" --name web-01 --labels role=web,env=dev
+"$BIN" agent init --data-dir "$WORK_DIR" --url http://127.0.0.1:7700 --token "$TOKEN" --name web-01 --labels role=web,env=dev
 "./scripts/run_agent.sh" --data-dir "$WORK_DIR" --dev-insecure-loopback --once
 curl -fsS \
   -H "Authorization: Bearer $ADMIN_TOKEN" \

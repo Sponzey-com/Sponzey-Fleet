@@ -31,9 +31,18 @@ use fleet_store::SqliteStore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt::{Display, Formatter};
+use std::fs::File;
+use std::io::BufReader;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio_rustls::TlsAcceptor;
+use tokio_rustls::rustls::ServerConfig;
+use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 const ADMIN_INDEX_HTML: &str = include_str!("../../../web-admin/index.html");
 const ADMIN_STYLES_CSS: &str = include_str!("../../../web-admin/styles.css");
@@ -45,6 +54,9 @@ const ADMIN_API_SCHEMA_JSON: &str = include_str!("../../../web-admin/api.schema.
 pub struct ControllerServerConfig {
     pub host: String,
     pub port: u16,
+    pub external_url: Option<String>,
+    pub tls_cert_path: Option<PathBuf>,
+    pub tls_key_path: Option<PathBuf>,
     pub data_dir: PathBuf,
     pub database_path: Option<PathBuf>,
     pub dev_insecure_loopback: bool,
@@ -54,6 +66,13 @@ pub struct ControllerServerConfig {
 struct ControllerAppState {
     store: Arc<Mutex<SqliteStore>>,
     identity: Arc<ControllerIdentity>,
+    metadata: Arc<ControllerRuntimeMetadata>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ControllerRuntimeMetadata {
+    external_url: Option<String>,
+    tls_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,6 +121,18 @@ pub struct EnrollAgentResponse {
 pub struct ControllerIdentityResponse {
     pub controller_public_key: String,
     pub controller_fingerprint: String,
+    #[serde(default)]
+    pub controller_signing_public_key: String,
+    #[serde(default)]
+    pub controller_signing_fingerprint: String,
+    #[serde(default)]
+    pub tls_endpoint: ControllerTlsEndpointResponse,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ControllerTlsEndpointResponse {
+    pub external_url: Option<String>,
+    pub tls_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,12 +143,34 @@ pub struct CreateEnrollmentTokenResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateEnrollmentTokenRequest {
+    #[serde(default, alias = "labels")]
+    pub default_labels: String,
+    #[serde(default = "default_enrollment_token_max_uses")]
+    pub max_uses: u32,
+    #[serde(default = "default_enrollment_token_expires_in_seconds")]
+    pub expires_in_seconds: u64,
+}
+
+impl Default for CreateEnrollmentTokenRequest {
+    fn default() -> Self {
+        Self {
+            default_labels: String::new(),
+            max_uses: default_enrollment_token_max_uses(),
+            expires_in_seconds: default_enrollment_token_expires_in_seconds(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnrollmentTokenSummaryResponse {
     pub id: String,
     pub default_labels: String,
     pub max_uses: u32,
     pub used_count: u32,
+    pub remaining_uses: u32,
     pub revoked: bool,
+    pub expires_at_epoch: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -229,6 +282,10 @@ pub struct AgentResponse {
     pub fingerprint: String,
     pub labels: Vec<AgentLabelResponse>,
     pub last_seen_at_ms: Option<u64>,
+    pub last_seen_age_seconds: Option<u64>,
+    pub hostname: Option<String>,
+    pub os: Option<String>,
+    pub arch: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -277,6 +334,7 @@ pub enum ControllerError {
     Store(fleet_store::StoreError),
     Protocol(fleet_protocol::ProtocolError),
     Json(String),
+    Tls(String),
     InsecureRemote(String),
 }
 
@@ -287,6 +345,7 @@ impl Display for ControllerError {
             Self::Store(error) => write!(formatter, "store error: {error:?}"),
             Self::Protocol(error) => write!(formatter, "{error}"),
             Self::Json(error) => write!(formatter, "json error: {error}"),
+            Self::Tls(error) => write!(formatter, "tls error: {error}"),
             Self::InsecureRemote(host) => {
                 write!(
                     formatter,
@@ -338,6 +397,8 @@ where
 
     tracing::info!(
         bind_addr = %format!("{}:{}", config.host, config.port),
+        external_url = %config.external_url.as_deref().unwrap_or(""),
+        tls_enabled = config.tls_cert_path.is_some(),
         controller_fingerprint = %identity.fingerprint,
         dev_insecure_loopback = config.dev_insecure_loopback,
         "controller_started"
@@ -350,6 +411,12 @@ where
         audit_dev_insecure_loopback_enabled(&store, &config.host)?;
     }
     println!("controller listening on {}:{}", config.host, config.port);
+    if let Some(external_url) = &config.external_url {
+        println!("controller external url: {external_url}");
+    }
+    if config.tls_cert_path.is_some() {
+        println!("controller transport: https");
+    }
     if config.dev_insecure_loopback {
         println!("warning: dev insecure loopback mode enabled");
     }
@@ -377,6 +444,10 @@ where
     let state = ControllerAppState {
         store: Arc::new(Mutex::new(store)),
         identity: Arc::new(identity),
+        metadata: Arc::new(ControllerRuntimeMetadata {
+            external_url: config.external_url.clone(),
+            tls_enabled: config.tls_cert_path.is_some(),
+        }),
     };
     let app = Router::new()
         .route("/api/agents/ws", get(axum_agent_websocket))
@@ -386,17 +457,71 @@ where
         .await
         .map_err(ControllerError::Io)?;
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            while !should_shutdown() {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .map_err(ControllerError::Io)?;
+    if let (Some(cert_path), Some(key_path)) = (&config.tls_cert_path, &config.tls_key_path) {
+        let listener = TlsControllerListener {
+            listener,
+            acceptor: build_tls_acceptor(cert_path, key_path)?,
+        };
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                while !should_shutdown() {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .map_err(ControllerError::Io)?;
+    } else {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                while !should_shutdown() {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .map_err(ControllerError::Io)?;
+    }
 
     tracing::info!("controller_stopped");
     Ok(())
+}
+
+struct TlsControllerListener {
+    listener: tokio::net::TcpListener,
+    acceptor: TlsAcceptor,
+}
+
+impl axum::serve::Listener for TlsControllerListener {
+    type Io = tokio_rustls::server::TlsStream<tokio::net::TcpStream>;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            let (stream, remote_addr) = match self.listener.accept().await {
+                Ok(accepted) => accepted,
+                Err(error) => {
+                    tracing::warn!(error = %error, "controller_tcp_accept_failed");
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+            };
+
+            match self.acceptor.accept(stream).await {
+                Ok(tls_stream) => return (tls_stream, remote_addr),
+                Err(error) => {
+                    tracing::warn!(
+                        remote_addr = %remote_addr,
+                        error = %error,
+                        "controller_tls_handshake_failed"
+                    );
+                    continue;
+                }
+            }
+        }
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        self.listener.local_addr()
+    }
 }
 
 async fn axum_http_fallback(
@@ -415,7 +540,9 @@ async fn axum_http_fallback(
                 "store lock poisoned".to_owned(),
             ))
         })
-        .and_then(|store| route_request_with_identity(&request, &store, &state.identity));
+        .and_then(|store| {
+            route_request_with_identity(&request, &store, &state.identity, &state.metadata)
+        });
 
     match result {
         Ok(response) => axum_response_from_raw(&response),
@@ -1009,13 +1136,19 @@ fn audit_drift(
 
 #[cfg(test)]
 fn route_request(request: &str, store: &SqliteStore) -> Result<String, ControllerError> {
-    route_request_with_identity(request, store, &ControllerIdentity::dev_insecure())
+    route_request_with_identity(
+        request,
+        store,
+        &ControllerIdentity::dev_insecure(),
+        &ControllerRuntimeMetadata::default(),
+    )
 }
 
 fn route_request_with_identity(
     request: &str,
     store: &SqliteStore,
     identity: &ControllerIdentity,
+    metadata: &ControllerRuntimeMetadata,
 ) -> Result<String, ControllerError> {
     let Some(request_line) = request.lines().next() else {
         return Ok(response(400, "text/plain", "bad request\n"));
@@ -1029,11 +1162,8 @@ fn route_request_with_identity(
     }
 
     if method == "GET" && path == "/api/controller/identity" {
-        let body = serde_json::to_string(&ControllerIdentityResponse {
-            controller_public_key: identity.public_key.clone(),
-            controller_fingerprint: identity.fingerprint.clone(),
-        })
-        .map_err(|error| ControllerError::Json(error.to_string()))?;
+        let body = serde_json::to_string(&controller_identity_response(identity, metadata))
+            .map_err(|error| ControllerError::Json(error.to_string()))?;
         return Ok(response(200, "application/json", &format!("{body}\n")));
     }
 
@@ -1079,8 +1209,15 @@ fn route_request_with_identity(
             }
         }
         ("POST", "/api/enrollment-tokens") => {
-            let body = create_enrollment_token(store)?;
-            Ok(response(201, "application/json", &format!("{body}\n")))
+            match create_enrollment_token(request_body(request), store) {
+                Ok(body) => Ok(response(201, "application/json", &format!("{body}\n"))),
+                Err(ControllerError::Json(message)) => Ok(response(
+                    400,
+                    "application/json",
+                    &format!("{{\"error\":\"{}\"}}\n", json_escape(&message)),
+                )),
+                Err(error) => Err(error),
+            }
         }
         ("POST", "/api/jobs/command") => {
             match create_command_job(request_body(request), store, identity) {
@@ -1254,6 +1391,22 @@ fn route_request_with_identity(
     }
 }
 
+fn controller_identity_response(
+    identity: &ControllerIdentity,
+    metadata: &ControllerRuntimeMetadata,
+) -> ControllerIdentityResponse {
+    ControllerIdentityResponse {
+        controller_public_key: identity.public_key.clone(),
+        controller_fingerprint: identity.fingerprint.clone(),
+        controller_signing_public_key: identity.public_key.clone(),
+        controller_signing_fingerprint: identity.fingerprint.clone(),
+        tls_endpoint: ControllerTlsEndpointResponse {
+            external_url: metadata.external_url.clone(),
+            tls_enabled: metadata.tls_enabled,
+        },
+    }
+}
+
 fn admin_static_response(path: &str) -> String {
     let path = path.split_once('?').map(|(path, _)| path).unwrap_or(path);
     match path {
@@ -1282,11 +1435,21 @@ enum CreateCommandJobHttpError {
     Internal(ControllerError),
 }
 
-fn create_enrollment_token(store: &SqliteStore) -> Result<String, ControllerError> {
+fn create_enrollment_token(body: &str, store: &SqliteStore) -> Result<String, ControllerError> {
+    let request = parse_create_enrollment_token_request(body)?;
+    if request.max_uses == 0 {
+        return Err(ControllerError::Json(
+            "max_uses must be greater than zero".to_owned(),
+        ));
+    }
+    if request.expires_in_seconds == 0 {
+        return Err(ControllerError::Json(
+            "expires_in_seconds must be greater than zero".to_owned(),
+        ));
+    }
     let id = fleet_core::generate_prefixed_ulid("et")
         .map_err(|error| ControllerError::Json(error.to_string()))?;
     let token = generate_token("enroll")?;
-    let expires_in_seconds = 3600;
     let now = SystemTime::now();
     let mut repo = ControllerEnrollmentTokenRepository { store };
     let mut audit = ControllerAuditWriter { store };
@@ -1296,9 +1459,9 @@ fn create_enrollment_token(store: &SqliteStore) -> Result<String, ControllerErro
         CreateEnrollmentTokenInput {
             id,
             token_hash: hash_token(&token),
-            default_labels: String::new(),
-            expires_at: now + Duration::from_secs(expires_in_seconds),
-            max_uses: 1,
+            default_labels: request.default_labels,
+            expires_at: now + Duration::from_secs(request.expires_in_seconds),
+            max_uses: request.max_uses,
             occurred_at: now,
         },
     )
@@ -1307,9 +1470,18 @@ fn create_enrollment_token(store: &SqliteStore) -> Result<String, ControllerErro
     serde_json::to_string(&CreateEnrollmentTokenResponse {
         id: output.id,
         token,
-        expires_in_seconds,
+        expires_in_seconds: request.expires_in_seconds,
     })
     .map_err(|error| ControllerError::Json(error.to_string()))
+}
+
+fn parse_create_enrollment_token_request(
+    body: &str,
+) -> Result<CreateEnrollmentTokenRequest, ControllerError> {
+    if body.trim().is_empty() {
+        return Ok(CreateEnrollmentTokenRequest::default());
+    }
+    serde_json::from_str(body).map_err(|error| ControllerError::Json(error.to_string()))
 }
 
 fn list_enrollment_tokens(store: &SqliteStore) -> Result<String, ControllerError> {
@@ -1323,7 +1495,9 @@ fn list_enrollment_tokens(store: &SqliteStore) -> Result<String, ControllerError
                 default_labels: record.default_labels,
                 max_uses: record.max_uses,
                 used_count: record.used_count,
+                remaining_uses: record.max_uses.saturating_sub(record.used_count),
                 revoked: record.revoked,
+                expires_at_epoch: system_time_to_millis(record.expires_at) / 1000,
             })
             .map_err(|error| ControllerError::Json(error.to_string()))
         })
@@ -1608,8 +1782,8 @@ fn list_agents(store: &SqliteStore) -> Result<String, ControllerError> {
     let repo = ControllerAgentInventoryRepository { store };
     let agents = ListInventoryAgents::execute(&repo)?
         .iter()
-        .map(agent_to_response)
-        .collect::<Vec<_>>();
+        .map(|agent| agent_to_response_with_latest_facts(agent, store))
+        .collect::<Result<Vec<_>, _>>()?;
     serde_json::to_string(&agents).map_err(|error| ControllerError::Json(error.to_string()))
 }
 
@@ -1619,7 +1793,8 @@ fn get_agent(agent_id: &str, store: &SqliteStore) -> Result<Option<String>, Cont
     let Some(agent) = GetInventoryAgent::execute(&repo, agent_id)? else {
         return Ok(None);
     };
-    serde_json::to_string(&agent_to_response(&agent))
+    let response = agent_to_response_with_latest_facts(&agent, store)?;
+    serde_json::to_string(&response)
         .map(Some)
         .map_err(|error| ControllerError::Json(error.to_string()))
 }
@@ -1655,7 +1830,8 @@ fn update_agent_labels(
     else {
         return Ok(None);
     };
-    serde_json::to_string(&agent_to_response(&agent))
+    let response = agent_to_response_with_latest_facts(&agent, store)?;
+    serde_json::to_string(&response)
         .map(Some)
         .map_err(|error| ControllerError::Json(error.to_string()))
 }
@@ -1773,7 +1949,41 @@ fn audit_value_to_response(value: &AuditValue) -> (&'static str, String) {
     }
 }
 
-fn agent_to_response(agent: &Agent) -> AgentResponse {
+#[derive(Debug, Clone, Default)]
+struct AgentFactsSummary {
+    hostname: Option<String>,
+    os: Option<String>,
+    arch: Option<String>,
+}
+
+fn agent_to_response_with_latest_facts(
+    agent: &Agent,
+    store: &SqliteStore,
+) -> Result<AgentResponse, ControllerError> {
+    let summary = store
+        .latest_facts_snapshot(agent.id().as_str())?
+        .and_then(|record| agent_facts_summary(&record.body));
+    Ok(agent_to_response(agent, summary.as_ref()))
+}
+
+fn agent_facts_summary(body: &str) -> Option<AgentFactsSummary> {
+    let value = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    Some(AgentFactsSummary {
+        hostname: json_string_field(&value, "hostname"),
+        os: json_string_field(&value, "os"),
+        arch: json_string_field(&value, "arch"),
+    })
+}
+
+fn json_string_field(value: &serde_json::Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
+fn agent_to_response(agent: &Agent, facts: Option<&AgentFactsSummary>) -> AgentResponse {
+    let last_seen_at = agent.last_seen_at();
     AgentResponse {
         id: agent.id().as_str().to_owned(),
         name: agent.name().as_str().to_owned(),
@@ -1787,8 +1997,19 @@ fn agent_to_response(agent: &Agent) -> AgentResponse {
                 value: label.value().to_owned(),
             })
             .collect(),
-        last_seen_at_ms: agent.last_seen_at().map(system_time_to_millis),
+        last_seen_at_ms: last_seen_at.map(system_time_to_millis),
+        last_seen_age_seconds: last_seen_at.map(system_time_age_seconds),
+        hostname: facts.and_then(|summary| summary.hostname.clone()),
+        os: facts.and_then(|summary| summary.os.clone()),
+        arch: facts.and_then(|summary| summary.arch.clone()),
     }
+}
+
+fn system_time_age_seconds(value: SystemTime) -> u64 {
+    SystemTime::now()
+        .duration_since(value)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn agent_status_to_str(status: AgentStatus) -> &'static str {
@@ -2312,6 +2533,14 @@ fn enroll_agent(
     );
 
     store.save_agent(agent)?;
+    store.write_audit_event(AuditEvent {
+        category: AuditCategory::Enrollment,
+        action: "enrollment_token_used".to_owned(),
+        actor: AuditActor::new(agent_id.clone()),
+        target: AuditTarget::new(enrollment_token.id),
+        value: AuditValue::SecretRef("enrollment-token".to_owned()),
+        occurred_at: SystemTime::now(),
+    })?;
 
     serde_json::to_string(&EnrollAgentResponse {
         agent_id,
@@ -2380,11 +2609,166 @@ fn validate_transport(config: &ControllerServerConfig) -> Result<(), ControllerE
     if config.dev_insecure_loopback && !is_loopback_host(&config.host) {
         return Err(ControllerError::InsecureRemote(config.host.clone()));
     }
+    match (&config.tls_cert_path, &config.tls_key_path) {
+        (Some(cert_path), Some(key_path)) => {
+            validate_tls_material(cert_path, key_path)?;
+            if let Some(external_url) = &config.external_url {
+                if !external_url.starts_with("https://") {
+                    return Err(ControllerError::Tls(
+                        "TLS controller external URL must start with https://".to_owned(),
+                    ));
+                }
+            }
+        }
+        (None, None) => {}
+        _ => {
+            return Err(ControllerError::Tls(
+                "--tls-cert and --tls-key must be provided together".to_owned(),
+            ));
+        }
+    }
+    if let Some(external_url) = &config.external_url {
+        validate_external_url(external_url, config.dev_insecure_loopback)?;
+    }
+    Ok(())
+}
+
+fn validate_tls_material(cert_path: &Path, key_path: &Path) -> Result<(), ControllerError> {
+    validate_tls_private_key_permissions(key_path)?;
+    let certs = load_tls_certificates(cert_path)?;
+    if certs.is_empty() {
+        return Err(ControllerError::Tls(format!(
+            "TLS certificate file has no certificates: {}",
+            cert_path.display()
+        )));
+    }
+    let _key = load_tls_private_key(key_path)?;
+    Ok(())
+}
+
+fn build_tls_acceptor(cert_path: &Path, key_path: &Path) -> Result<TlsAcceptor, ControllerError> {
+    ensure_rustls_crypto_provider();
+    validate_tls_material(cert_path, key_path)?;
+    let config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(
+            load_tls_certificates(cert_path)?,
+            load_tls_private_key(key_path)?,
+        )
+        .map_err(|error| ControllerError::Tls(format!("invalid TLS certificate/key: {error}")))?;
+    Ok(TlsAcceptor::from(Arc::new(config)))
+}
+
+fn ensure_rustls_crypto_provider() {
+    let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
+}
+
+fn load_tls_certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>, ControllerError> {
+    let file = File::open(path).map_err(|error| {
+        ControllerError::Tls(format!(
+            "failed to open TLS certificate file {}: {error}",
+            path.display()
+        ))
+    })?;
+    let mut reader = BufReader::new(file);
+    rustls_pemfile::certs(&mut reader)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            ControllerError::Tls(format!(
+                "failed to parse TLS certificate file {}: {error}",
+                path.display()
+            ))
+        })
+}
+
+fn load_tls_private_key(path: &Path) -> Result<PrivateKeyDer<'static>, ControllerError> {
+    let file = File::open(path).map_err(|error| {
+        ControllerError::Tls(format!(
+            "failed to open TLS private key file {}: {error}",
+            path.display()
+        ))
+    })?;
+    let mut reader = BufReader::new(file);
+    rustls_pemfile::private_key(&mut reader)
+        .map_err(|error| {
+            ControllerError::Tls(format!(
+                "failed to parse TLS private key file {}: {error}",
+                path.display()
+            ))
+        })?
+        .ok_or_else(|| {
+            ControllerError::Tls(format!(
+                "TLS private key file has no private key: {}",
+                path.display()
+            ))
+        })
+}
+
+fn validate_tls_private_key_permissions(path: &Path) -> Result<(), ControllerError> {
+    #[cfg(unix)]
+    {
+        let mode = std::fs::metadata(path)
+            .map_err(ControllerError::Io)?
+            .permissions()
+            .mode();
+        if mode & 0o077 != 0 {
+            return Err(ControllerError::Tls(format!(
+                "TLS private key file must not be readable, writable, or executable by group/other: {}",
+                path.display()
+            )));
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+
     Ok(())
 }
 
 fn is_loopback_host(host: &str) -> bool {
     matches!(host, "127.0.0.1" | "localhost" | "::1")
+}
+
+fn validate_external_url(url: &str, dev_insecure_loopback: bool) -> Result<(), ControllerError> {
+    if let Some(rest) = url.strip_prefix("https://") {
+        let host = external_url_host(rest)?;
+        if host.is_empty() {
+            return Err(ControllerError::Json(
+                "controller external URL host cannot be empty".to_owned(),
+            ));
+        }
+        return Ok(());
+    }
+
+    if let Some(rest) = url.strip_prefix("http://") {
+        let host = external_url_host(rest)?;
+        if dev_insecure_loopback && is_loopback_host(host) {
+            return Ok(());
+        }
+        return Err(ControllerError::InsecureRemote(host.to_owned()));
+    }
+
+    Err(ControllerError::Json(
+        "controller external URL must start with https://, except loopback dev http://".to_owned(),
+    ))
+}
+
+fn external_url_host(rest: &str) -> Result<&str, ControllerError> {
+    let authority = rest.split('/').next().unwrap_or(rest);
+    if authority.is_empty() {
+        return Err(ControllerError::Json(
+            "controller external URL host cannot be empty".to_owned(),
+        ));
+    }
+    if let Some(stripped) = authority.strip_prefix('[') {
+        let (host, _) = stripped.split_once(']').ok_or_else(|| {
+            ControllerError::Json("invalid bracketed IPv6 external URL host".to_owned())
+        })?;
+        return Ok(host);
+    }
+    Ok(authority.split(':').next().unwrap_or(authority))
 }
 
 pub fn hash_token(token: &str) -> String {
@@ -2410,6 +2794,14 @@ fn default_job_expiration_seconds() -> u64 {
 
 fn default_drift_timeout_seconds() -> u64 {
     30
+}
+
+fn default_enrollment_token_max_uses() -> u32 {
+    1
+}
+
+fn default_enrollment_token_expires_in_seconds() -> u64 {
+    3600
 }
 
 fn default_confirmed_by() -> String {
@@ -2455,6 +2847,33 @@ mod tests {
             route_request("GET /api/controller/identity HTTP/1.1\r\n\r\n", &store).unwrap();
         assert!(response.starts_with("HTTP/1.1 200"));
         assert!(response.contains("\"controller_fingerprint\":\"dev-controller-fingerprint\""));
+        assert!(
+            response.contains("\"controller_signing_fingerprint\":\"dev-controller-fingerprint\"")
+        );
+        assert!(response.contains("\"tls_endpoint\""));
+    }
+
+    #[test]
+    fn controller_identity_endpoint_separates_tls_metadata() {
+        let store = SqliteStore::in_memory().unwrap();
+        let identity = ControllerIdentity::dev_insecure();
+        let metadata = ControllerRuntimeMetadata {
+            external_url: Some("https://fleet.example.com".to_owned()),
+            tls_enabled: true,
+        };
+
+        let response = route_request_with_identity(
+            "GET /api/controller/identity HTTP/1.1\r\n\r\n",
+            &store,
+            &identity,
+            &metadata,
+        )
+        .unwrap();
+
+        assert!(response.contains("\"controller_signing_public_key\""));
+        assert!(response.contains("\"controller_signing_fingerprint\""));
+        assert!(response.contains("\"external_url\":\"https://fleet.example.com\""));
+        assert!(response.contains("\"tls_enabled\":true"));
     }
 
     #[test]
@@ -2517,6 +2936,45 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 201"));
         assert!(response.contains("\"token\":\"enroll-"));
         assert_eq!(store.list_enrollment_tokens().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn admin_token_create_enrollment_token_accepts_scope() {
+        let store = SqliteStore::in_memory().unwrap();
+        store
+            .insert_admin_token_hash(&hash_token("admin-token"))
+            .unwrap();
+
+        let response = route_request(
+            "POST /api/enrollment-tokens HTTP/1.1\r\nAuthorization: Bearer admin-token\r\n\r\n{\"labels\":\"role=web,env=prod\",\"max_uses\":3,\"expires_in_seconds\":900}",
+            &store,
+        )
+        .unwrap();
+        let records = store.list_enrollment_tokens().unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 201"));
+        assert!(response.contains("\"expires_in_seconds\":900"));
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].default_labels, "role=web,env=prod");
+        assert_eq!(records[0].max_uses, 3);
+    }
+
+    #[test]
+    fn admin_token_create_enrollment_token_rejects_invalid_scope() {
+        let store = SqliteStore::in_memory().unwrap();
+        store
+            .insert_admin_token_hash(&hash_token("admin-token"))
+            .unwrap();
+
+        let response = route_request(
+            "POST /api/enrollment-tokens HTTP/1.1\r\nAuthorization: Bearer admin-token\r\n\r\n{\"max_uses\":0}",
+            &store,
+        )
+        .unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 400"));
+        assert!(response.contains("max_uses"));
+        assert_eq!(store.list_enrollment_tokens().unwrap().len(), 0);
     }
 
     #[test]
@@ -2921,6 +3379,16 @@ spec:
             .insert_admin_token_hash(&hash_token("admin-token"))
             .unwrap();
         save_test_agent(&store, "agent-1");
+        store
+            .mark_agent_online("agent-1", SystemTime::now() - Duration::from_secs(5))
+            .unwrap();
+        store
+            .insert_facts_snapshot(
+                "agent-1",
+                "{\"hostname\":\"web-01\",\"os\":\"linux\",\"arch\":\"x86_64\"}",
+                SystemTime::now(),
+            )
+            .unwrap();
 
         let response = route_request(
             "GET /api/agents HTTP/1.1\r\nAuthorization: Bearer admin-token\r\n\r\n",
@@ -2931,8 +3399,12 @@ spec:
         assert!(response.starts_with("HTTP/1.1 200"));
         assert!(response.contains("\"id\":\"agent-1\""));
         assert!(response.contains("\"name\":\"agent-1\""));
-        assert!(response.contains("\"status\":\"pending\""));
+        assert!(response.contains("\"status\":\"online\""));
         assert!(response.contains("\"fingerprint\""));
+        assert!(response.contains("\"hostname\":\"web-01\""));
+        assert!(response.contains("\"os\":\"linux\""));
+        assert!(response.contains("\"arch\":\"x86_64\""));
+        assert!(response.contains("\"last_seen_age_seconds\""));
     }
 
     #[test]
@@ -3322,7 +3794,13 @@ spec:
             body.len(),
             body
         );
-        route_request_with_identity(&request, &store, &ControllerIdentity::dev_insecure()).unwrap();
+        route_request_with_identity(
+            &request,
+            &store,
+            &ControllerIdentity::dev_insecure(),
+            &ControllerRuntimeMetadata::default(),
+        )
+        .unwrap();
 
         let response = route_request(
             "GET /api/jobs HTTP/1.1\r\nAuthorization: Bearer admin-token\r\n\r\n",
@@ -3428,6 +3906,15 @@ spec:
         assert!(response.contains("\"controller_fingerprint\":\"dev-controller-fingerprint\""));
         assert_eq!(store.agent_count().unwrap(), 1);
         assert_eq!(store.list_enrollment_tokens().unwrap()[0].used_count, 1);
+        let audits = store
+            .list_audit_events_by_category(AuditCategory::Enrollment, 10)
+            .unwrap();
+        assert!(audits.iter().any(|event| {
+            event.action == "enrollment_token_used"
+                && event.actor.as_str() == "agent-web-01"
+                && event.target.as_str() == "et-1"
+                && !event.contains_secret_plaintext()
+        }));
     }
 
     #[test]
@@ -3621,6 +4108,9 @@ spec:
         let config = ControllerServerConfig {
             host: "0.0.0.0".to_owned(),
             port: 7700,
+            external_url: None,
+            tls_cert_path: None,
+            tls_key_path: None,
             data_dir: PathBuf::from(".sponzey"),
             database_path: None,
             dev_insecure_loopback: true,
@@ -3628,6 +4118,108 @@ spec:
         assert!(matches!(
             validate_transport(&config),
             Err(ControllerError::InsecureRemote(_))
+        ));
+    }
+
+    #[test]
+    fn controller_allows_remote_bind_with_https_external_url() {
+        let config = ControllerServerConfig {
+            host: "0.0.0.0".to_owned(),
+            port: 7700,
+            external_url: Some("https://fleet.example.com".to_owned()),
+            tls_cert_path: None,
+            tls_key_path: None,
+            data_dir: PathBuf::from(".sponzey"),
+            database_path: None,
+            dev_insecure_loopback: false,
+        };
+
+        assert!(validate_transport(&config).is_ok());
+    }
+
+    #[test]
+    fn controller_rejects_remote_http_external_url() {
+        let config = ControllerServerConfig {
+            host: "127.0.0.1".to_owned(),
+            port: 7700,
+            external_url: Some("http://192.168.0.10:7700".to_owned()),
+            tls_cert_path: None,
+            tls_key_path: None,
+            data_dir: PathBuf::from(".sponzey"),
+            database_path: None,
+            dev_insecure_loopback: true,
+        };
+
+        assert!(matches!(
+            validate_transport(&config),
+            Err(ControllerError::InsecureRemote(_))
+        ));
+    }
+
+    #[test]
+    fn controller_requires_tls_cert_and_key_together() {
+        let config = ControllerServerConfig {
+            host: "127.0.0.1".to_owned(),
+            port: 7700,
+            external_url: Some("https://127.0.0.1:7700".to_owned()),
+            tls_cert_path: Some(PathBuf::from("cert.pem")),
+            tls_key_path: None,
+            data_dir: PathBuf::from(".sponzey"),
+            database_path: None,
+            dev_insecure_loopback: false,
+        };
+
+        assert!(matches!(
+            validate_transport(&config),
+            Err(ControllerError::Tls(message)) if message.contains("--tls-cert and --tls-key")
+        ));
+    }
+
+    #[test]
+    fn controller_accepts_valid_tls_material() {
+        let dir = unique_test_dir("controller-valid-tls");
+        let (cert_path, key_path) = write_test_tls_material(&dir);
+        let config = ControllerServerConfig {
+            host: "127.0.0.1".to_owned(),
+            port: 7700,
+            external_url: Some("https://127.0.0.1:7700".to_owned()),
+            tls_cert_path: Some(cert_path),
+            tls_key_path: Some(key_path),
+            data_dir: PathBuf::from(".sponzey"),
+            database_path: None,
+            dev_insecure_loopback: false,
+        };
+
+        assert!(validate_transport(&config).is_ok());
+    }
+
+    #[test]
+    fn controller_rejects_invalid_tls_material() {
+        let dir = unique_test_dir("controller-invalid-tls");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cert_path = dir.join("cert.pem");
+        let key_path = dir.join("key.pem");
+        std::fs::write(&cert_path, "not a certificate").unwrap();
+        std::fs::write(&key_path, "not a key").unwrap();
+        set_secure_test_permissions(&key_path);
+
+        assert!(matches!(
+            validate_tls_material(&cert_path, &key_path),
+            Err(ControllerError::Tls(message)) if message.contains("no certificates")
+                || message.contains("parse TLS certificate")
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn controller_rejects_group_readable_tls_private_key() {
+        let dir = unique_test_dir("controller-insecure-tls-key");
+        let (cert_path, key_path) = write_test_tls_material(&dir);
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert!(matches!(
+            validate_tls_material(&cert_path, &key_path),
+            Err(ControllerError::Tls(message)) if message.contains("must not be readable")
         ));
     }
 
@@ -3657,6 +4249,9 @@ spec:
                 ControllerServerConfig {
                     host: "127.0.0.1".to_owned(),
                     port,
+                    external_url: Some(format!("http://127.0.0.1:{port}")),
+                    tls_cert_path: None,
+                    tls_key_path: None,
                     data_dir,
                     database_path: None,
                     dev_insecure_loopback: true,
@@ -3671,6 +4266,53 @@ spec:
         handle.join().unwrap();
 
         assert!(response.starts_with("HTTP/1.1 200"));
+        assert!(response.contains("\"status\":\"ok\""));
+    }
+
+    #[test]
+    fn controller_https_server_starts_with_self_signed_fixture() {
+        let data_dir = unique_test_dir("controller-https-shutdown");
+        std::fs::create_dir_all(data_dir.join("controller")).unwrap();
+        let key_pair = fleet_core::generate_agent_key_pair().unwrap();
+        std::fs::write(
+            data_dir.join("controller").join("controller_public.key"),
+            format!("{}\n", key_pair.public_key_hex),
+        )
+        .unwrap();
+        std::fs::write(
+            data_dir.join("controller").join("controller_private.key"),
+            format!("{}\n", key_pair.private_key_hex),
+        )
+        .unwrap();
+        let (cert_path, key_path) = write_test_tls_material(&data_dir.join("tls"));
+
+        let Some(port) = free_loopback_port() else {
+            return;
+        };
+        let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread_shutdown = shutdown.clone();
+        let thread_cert_path = cert_path.clone();
+        let handle = std::thread::spawn(move || {
+            start_controller_server_until(
+                ControllerServerConfig {
+                    host: "127.0.0.1".to_owned(),
+                    port,
+                    external_url: Some(format!("https://localhost:{port}")),
+                    tls_cert_path: Some(thread_cert_path),
+                    tls_key_path: Some(key_path),
+                    data_dir,
+                    database_path: None,
+                    dev_insecure_loopback: false,
+                },
+                move || thread_shutdown.load(std::sync::atomic::Ordering::SeqCst),
+            )
+            .unwrap();
+        });
+
+        let response = poll_https_get(port, "/healthz", &cert_path);
+        shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+        handle.join().unwrap();
+
         assert!(response.contains("\"status\":\"ok\""));
     }
 
@@ -3847,6 +4489,33 @@ spec:
         store.save_job_record(&job).unwrap();
     }
 
+    fn write_test_tls_material(dir: &Path) -> (PathBuf, PathBuf) {
+        std::fs::create_dir_all(dir).unwrap();
+        let cert = rcgen::generate_simple_self_signed(vec![
+            "localhost".to_owned(),
+            "127.0.0.1".to_owned(),
+        ])
+        .unwrap();
+        let cert_path = dir.join("cert.pem");
+        let key_path = dir.join("key.pem");
+        std::fs::write(&cert_path, cert.serialize_pem().unwrap()).unwrap();
+        std::fs::write(&key_path, cert.serialize_private_key_pem()).unwrap();
+        set_secure_test_permissions(&key_path);
+        (cert_path, key_path)
+    }
+
+    fn set_secure_test_permissions(path: &Path) {
+        #[cfg(unix)]
+        {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+        }
+    }
+
     fn free_loopback_port() -> Option<u16> {
         std::net::TcpListener::bind("127.0.0.1:0")
             .ok()
@@ -3867,6 +4536,27 @@ spec:
             }
         }
         panic!("controller did not accept HTTP requests");
+    }
+
+    fn poll_https_get(port: u16, path: &str, ca_cert_path: &Path) -> String {
+        let certificate =
+            reqwest::Certificate::from_pem(&std::fs::read(ca_cert_path).unwrap()).unwrap();
+        let client = reqwest::blocking::Client::builder()
+            .add_root_certificate(certificate)
+            .build()
+            .unwrap();
+        let url = format!("https://localhost:{port}{path}");
+        for _ in 0..100 {
+            match client.get(&url).send() {
+                Ok(response) => {
+                    let status = response.status();
+                    let body = response.text().unwrap();
+                    return format!("HTTP/1.1 {}\r\n\r\n{}", status.as_u16(), body);
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        panic!("controller did not accept HTTPS requests");
     }
 
     fn unique_test_dir(name: &str) -> PathBuf {

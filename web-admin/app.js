@@ -4,6 +4,7 @@ const state = {
   token: "",
   selectedAgentId: "",
   lastJobId: "",
+  createdEnrollmentToken: null,
 };
 
 const api = createApiClient({
@@ -29,6 +30,12 @@ export function renderAgents(agents, selectedAgentId = "") {
       const labels = Array.isArray(agent.labels)
         ? agent.labels.map((label) => `${label.key}=${label.value}`).join(", ")
         : "";
+      const platform = [agent.os, agent.arch].filter(Boolean).join("/");
+      const age =
+        typeof agent.last_seen_age_seconds === "number"
+          ? `last seen ${agent.last_seen_age_seconds}s ago`
+          : "";
+      const meta = [agent.hostname, platform, age].filter(Boolean).join(" · ");
       const selectedClass = agent.id === selectedAgentId ? " selected" : "";
       return `
         <button class="agent-row${selectedClass}" type="button" data-agent-id="${escapeHtml(agent.id)}">
@@ -38,6 +45,7 @@ export function renderAgents(agents, selectedAgentId = "") {
           </span>
           <span class="status-pill ${escapeHtml(agent.status || "unknown")}">${escapeHtml(agent.status || "unknown")}</span>
           <small class="labels">${escapeHtml(labels || "no labels")}</small>
+          <small class="agent-meta">${escapeHtml(meta || "no facts summary")}</small>
         </button>
       `;
     })
@@ -110,6 +118,65 @@ export function renderJobs(jobs) {
       `;
     })
     .join("");
+}
+
+export function renderEnrollmentTokens(tokens) {
+  if (!Array.isArray(tokens) || tokens.length === 0) {
+    return '<div class="empty">No enrollment tokens created.</div>';
+  }
+  return tokens
+    .map((token) => {
+      const revokedClass = token.revoked ? " revoked" : "";
+      const expiresAt = token.expires_at_epoch
+        ? new Date(token.expires_at_epoch * 1000).toLocaleString()
+        : "unknown";
+      const labels = token.default_labels || "no default labels";
+      const remaining = token.remaining_uses ?? Math.max((token.max_uses ?? 0) - (token.used_count ?? 0), 0);
+      return `
+        <div class="token-row${revokedClass}">
+          <span>
+            <strong>${escapeHtml(token.id)}</strong>
+            <small>${escapeHtml(labels)}</small>
+          </span>
+          <span class="status-pill ${token.revoked ? "revoked" : "active"}">${token.revoked ? "revoked" : "active"}</span>
+          <small>${escapeHtml(remaining)} of ${escapeHtml(token.max_uses ?? 0)} use(s) left</small>
+          <small>expires ${escapeHtml(expiresAt)}</small>
+          <button type="button" data-revoke-token-id="${escapeHtml(token.id)}" ${token.revoked ? "disabled" : ""}>Revoke</button>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+export function renderCreatedEnrollmentToken(result, controllerUrl = "", agentName = "") {
+  if (!result || !result.token) {
+    return "Create a token to show the one-time value here.";
+  }
+  const url = controllerUrl || "https://fleet.example.com";
+  const name = agentName || "agent-01";
+  return [
+    "One-time token:",
+    result.token,
+    "",
+    "Agent init command:",
+    `sponzey agent init --url ${url} --token ${result.token} --name ${name}`,
+  ].join("\n");
+}
+
+export function buildEnrollmentTokenRequest({ labels, maxUses, expiresInSeconds }) {
+  const max_uses = Number.parseInt(maxUses, 10);
+  const expires_in_seconds = Number.parseInt(expiresInSeconds, 10);
+  if (!Number.isInteger(max_uses) || max_uses < 1) {
+    throw new Error("Max uses must be at least 1.");
+  }
+  if (!Number.isInteger(expires_in_seconds) || expires_in_seconds < 1) {
+    throw new Error("Expiry must be at least 1 second.");
+  }
+  return {
+    labels: String(labels ?? "").trim(),
+    max_uses,
+    expires_in_seconds,
+  };
 }
 
 export function parseCommandArgs(value) {
@@ -208,7 +275,11 @@ async function refreshAll() {
   }
   setStatus("Loading controller data...");
   await loadAgents();
-  const [jobs, audit] = await Promise.all([api.listJobs(), api.listAudit()]);
+  const [jobs, audit, enrollmentTokens] = await Promise.all([
+    api.listJobs(),
+    api.listAudit(),
+    api.listEnrollmentTokens(),
+  ]);
   document.querySelector("#jobs-list").innerHTML = renderJobs(jobs);
   document.querySelectorAll("[data-job-id]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -216,8 +287,48 @@ async function refreshAll() {
       pollJobOutput(state.lastJobId).catch((error) => setStatus(error.message, "error"));
     });
   });
+  document.querySelector("#enrollment-tokens-list").innerHTML = renderEnrollmentTokens(enrollmentTokens);
+  document.querySelectorAll("[data-revoke-token-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      revokeEnrollmentToken(button.dataset.revokeTokenId).catch((error) => setStatus(error.message, "error"));
+    });
+  });
   document.querySelector("#audit-list").innerHTML = renderAudit(audit);
   setStatus("Loaded latest controller data.", "ok");
+}
+
+async function submitEnrollmentToken(form) {
+  const data = new FormData(form);
+  const request = buildEnrollmentTokenRequest({
+    labels: data.get("labels"),
+    maxUses: data.get("max-uses"),
+    expiresInSeconds: data.get("expires-in-seconds"),
+  });
+  const response = await api.createEnrollmentToken(request);
+  state.createdEnrollmentToken = response;
+  document.querySelector("#created-enrollment-token").textContent = renderCreatedEnrollmentToken(
+    response,
+    data.get("controller-url")?.toString() || "",
+    data.get("agent-name")?.toString() || "",
+  );
+  setStatus(`Created enrollment token ${response.id}. Copy the token before refreshing.`, "ok");
+  await loadEnrollmentTokens();
+}
+
+async function loadEnrollmentTokens() {
+  const enrollmentTokens = await api.listEnrollmentTokens();
+  document.querySelector("#enrollment-tokens-list").innerHTML = renderEnrollmentTokens(enrollmentTokens);
+  document.querySelectorAll("[data-revoke-token-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      revokeEnrollmentToken(button.dataset.revokeTokenId).catch((error) => setStatus(error.message, "error"));
+    });
+  });
+}
+
+async function revokeEnrollmentToken(id) {
+  await api.revokeEnrollmentToken(id);
+  setStatus(`Revoked enrollment token ${id}.`, "ok");
+  await loadEnrollmentTokens();
 }
 
 async function submitCommand(form) {
@@ -261,6 +372,13 @@ function boot() {
     runForm.addEventListener("submit", (event) => {
       event.preventDefault();
       submitCommand(runForm).catch((error) => setStatus(error.message, "error"));
+    });
+  }
+  const enrollmentForm = document.querySelector("#enrollment-token-form");
+  if (enrollmentForm) {
+    enrollmentForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      submitEnrollmentToken(enrollmentForm).catch((error) => setStatus(error.message, "error"));
     });
   }
 }

@@ -8,6 +8,9 @@
     { "name": "listJobs", "method": "GET", "path": "/api/jobs" },
     { "name": "getJobOutput", "method": "GET", "path": "/api/jobs/{job_id}/output" },
     { "name": "listAudit", "method": "GET", "path": "/api/audit" },
+    { "name": "listEnrollmentTokens", "method": "GET", "path": "/api/enrollment-tokens" },
+    { "name": "createEnrollmentToken", "method": "POST", "path": "/api/enrollment-tokens" },
+    { "name": "revokeEnrollmentToken", "method": "DELETE", "path": "/api/enrollment-tokens/{token_id}" },
     { "name": "createCommandJob", "method": "POST", "path": "/api/jobs/command" },
     { "name": "createDriftCheckJob", "method": "POST", "path": "/api/jobs/drift-check" },
     { "name": "createRunbookJob", "method": "POST", "path": "/api/jobs/runbook" }

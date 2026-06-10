@@ -73,8 +73,6 @@ temp/
 *.tmp
 *.log
 
-.tasks/
-
 PROJECT.md
 RESEARCH.md
 token.md

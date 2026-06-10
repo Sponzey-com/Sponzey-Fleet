@@ -64,6 +64,7 @@ sponzey controller start \
   --host 127.0.0.1 \
   --port 7700 \
   --data-dir .sponzey \
+  --external-url http://127.0.0.1:7700 \
   --dev-insecure-loopback
 ```
 
@@ -108,9 +109,55 @@ sponzey agent start \
 로컬 개발 스크립트도 같은 단일 바이너리를 감싼 것입니다.
 
 ```bash
-./scripts/run_controller.sh --host 127.0.0.1 --port 7700 --data-dir .sponzey --dev-insecure-loopback
+./scripts/run_controller.sh --host 127.0.0.1 --port 7700 --data-dir .sponzey --external-url http://127.0.0.1:7700 --dev-insecure-loopback
 ./scripts/run_agent.sh --data-dir .sponzey --dev-insecure-loopback
 ```
+
+### 다른 노트북에서 SSH Tunnel로 개발 접속
+
+다른 노트북에서 붙일 때도 LAN `http://192.168.x.x:7700` controller URL을 쓰면 안 됩니다. MVP는 loopback이 아닌 insecure HTTP를 의도적으로 거부합니다. Controller 노트북에서는 controller를 loopback에만 bind하고, agent 노트북에서 SSH port forwarding으로 접근하게 만듭니다.
+
+Controller 노트북에서:
+
+```bash
+sponzey controller init --data-dir .sponzey
+
+sponzey controller start \
+  --host 127.0.0.1 \
+  --port 7700 \
+  --data-dir .sponzey \
+  --external-url http://127.0.0.1:7700 \
+  --dev-insecure-loopback
+```
+
+Enrollment token은 controller 노트북에서 만들고, 그 token 값만 agent 노트북으로 복사합니다.
+
+```bash
+sponzey enroll-token create --data-dir .sponzey --labels role=web,env=dev
+```
+
+Agent 노트북에서 tunnel을 열고 계속 유지합니다.
+
+```bash
+ssh -N -L 7700:127.0.0.1:7700 <user>@<controller-laptop-hostname-or-ip>
+```
+
+Agent 노트북의 다른 터미널에서 tunnel을 통해 agent를 초기화하고 실행합니다.
+
+```bash
+sponzey agent init \
+  --data-dir .sponzey \
+  --url http://127.0.0.1:7700 \
+  --token "<controller-laptop에서-만든-enrollment-token>" \
+  --name laptop-02 \
+  --labels role=dev-laptop,env=dev
+
+sponzey agent start \
+  --data-dir .sponzey \
+  --dev-insecure-loopback
+```
+
+Agent가 실행되는 동안 SSH tunnel은 열려 있어야 합니다. 운영용 원격 enrollment와 agent traffic은 insecure HTTP가 아니라 HTTPS/TLS로 처리해야 합니다.
 
 ### 3. Web Admin UI에서 Agent 보기
 
@@ -171,7 +218,6 @@ sponzey controller --help
 sponzey controller start --help
 sponzey agent --help
 sponzey agent init --help
-sponzey agent enroll --help
 sponzey agent start --help
 ```
 
@@ -188,7 +234,10 @@ Sponzey Fleet는 원격 운영 플랫폼이며, 관리 대상 host에서 root로
 
 - agent는 controller로 outbound 연결합니다.
 - enrollment token은 1회 등록 입력으로 사용합니다.
-- agent는 controller fingerprint를 pinning합니다.
+- agent는 controller signing fingerprint를 pinning합니다.
+- TLS certificate trust는 transport를 보호하고, controller signing fingerprint는 제품 identity를 보호합니다.
+- TLS certificate 교체는 pinned controller signing fingerprint가 같으면 허용됩니다.
+- controller signing key 변경은 명시적 agent 재등록 또는 향후 audit 기반 rotation flow가 필요합니다.
 - task envelope은 controller가 서명합니다.
 - unsigned, expired, replayed, target mismatch task는 agent가 거부합니다.
 - high-risk command는 명시적 confirmation이 필요합니다.

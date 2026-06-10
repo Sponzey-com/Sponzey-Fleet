@@ -31,6 +31,9 @@ assert(index.includes("id=\"audit-list\""), "index must expose the audit surface
 assert(index.includes("id=\"run-command-form\""), "index must expose command execution");
 assert(index.includes("id=\"job-output\""), "index must expose job output");
 assert(index.includes("id=\"jobs-list\""), "index must expose job history");
+assert(index.includes("id=\"enrollment-token-form\""), "index must expose enrollment token creation");
+assert(index.includes("id=\"enrollment-tokens-list\""), "index must expose enrollment token summaries");
+assert(index.includes("id=\"created-enrollment-token\""), "index must expose one-time token output");
 assert(index.includes("/admin/app.js"), "index must load the dependency-free app script from the admin base path");
 assert(index.includes("/admin/styles.css"), "index must load styles from the admin base path");
 assert(index.includes('method="post"'), "admin auth form must not leak tokens through a query string fallback");
@@ -48,6 +51,9 @@ for (const endpoint of [
   "listJobs",
   "getJobOutput",
   "listAudit",
+  "listEnrollmentTokens",
+  "createEnrollmentToken",
+  "revokeEnrollmentToken",
   "createCommandJob",
   "createDriftCheckJob",
   "createRunbookJob",
@@ -68,6 +74,9 @@ const {
   buildCommandJobRequest,
   renderJobOutput,
   renderJobs,
+  renderEnrollmentTokens,
+  renderCreatedEnrollmentToken,
+  buildEnrollmentTokenRequest,
 } = await import(appPath);
 const { API_SCHEMA_VERSION, createApiClient } = await import(clientPath);
 assert(API_SCHEMA_VERSION === schema.schema_version, "API client and schema versions must match");
@@ -86,6 +95,9 @@ const client = createApiClient({
 });
 await client.listAgents();
 await client.getLatestFacts("agent/1");
+await client.listEnrollmentTokens();
+await client.createEnrollmentToken({ labels: "role=web", max_uses: 1, expires_in_seconds: 60 });
+await client.revokeEnrollmentToken("et/1");
 await client.createCommandJob({ job_id: "job-1" });
 await client.createRunbookJob({ job_id: "job-runbook-1" });
 assert(calls[0].path === "/api/agents", "client must call agents endpoint");
@@ -93,20 +105,36 @@ assert(
   calls[1].path === "/api/agents/agent%2F1/facts/latest",
   "client must encode agent ids in paths",
 );
-assert(calls[2].path === "/api/jobs/command", "client must call command job endpoint");
-assert(calls[2].options.method === "POST", "client must POST command jobs");
-assert(calls[3].path === "/api/jobs/runbook", "client must call runbook job endpoint");
-assert(calls[3].options.method === "POST", "client must POST runbook jobs");
+assert(calls[2].path === "/api/enrollment-tokens", "client must call token list endpoint");
+assert(calls[3].path === "/api/enrollment-tokens", "client must call token create endpoint");
+assert(calls[3].options.method === "POST", "client must POST token creation");
+assert(calls[4].path === "/api/enrollment-tokens/et%2F1", "client must encode token ids in paths");
+assert(calls[4].options.method === "DELETE", "client must DELETE token revocation");
+assert(calls[5].path === "/api/jobs/command", "client must call command job endpoint");
+assert(calls[5].options.method === "POST", "client must POST command jobs");
+assert(calls[6].path === "/api/jobs/runbook", "client must call runbook job endpoint");
+assert(calls[6].options.method === "POST", "client must POST runbook jobs");
 assert(
-  calls[2].options.headers.Authorization === "Bearer admin-token",
+  calls[5].options.headers.Authorization === "Bearer admin-token",
   "client must attach bearer token",
 );
 
 const agentsHtml = renderAgents([
-  { id: "agent-1", name: "web-01", status: "online", labels: [{ key: "role", value: "web" }] },
+  {
+    id: "agent-1",
+    name: "web-01",
+    status: "online",
+    labels: [{ key: "role", value: "web" }],
+    hostname: "web-01.local",
+    os: "linux",
+    arch: "x86_64",
+    last_seen_age_seconds: 5,
+  },
 ]);
 assert(agentsHtml.includes("web-01"), "agents renderer must include agent name");
 assert(agentsHtml.includes("role=web"), "agents renderer must include labels");
+assert(agentsHtml.includes("linux/x86_64"), "agents renderer must include platform summary");
+assert(agentsHtml.includes("last seen 5s ago"), "agents renderer must include last seen age");
 
 const factsText = renderSnapshot({ body: { os: "linux", disk: { usage_available: true } } }, "");
 assert(factsText.includes("\"os\": \"linux\""), "facts renderer must show snapshot JSON");
@@ -129,6 +157,41 @@ const jobsHtml = renderJobs([
 ]);
 assert(jobsHtml.includes("job-1"), "job renderer must include job id");
 assert(jobsHtml.includes("uptime -a"), "job renderer must include command summary");
+const tokenRequest = buildEnrollmentTokenRequest({
+  labels: "role=web",
+  maxUses: "2",
+  expiresInSeconds: "900",
+});
+assert(tokenRequest.labels === "role=web", "token request must keep label scope");
+assert(tokenRequest.max_uses === 2, "token request must parse max uses");
+assert(tokenRequest.expires_in_seconds === 900, "token request must parse expiry");
+let invalidTokenScopeFailed = false;
+try {
+  buildEnrollmentTokenRequest({ labels: "", maxUses: "0", expiresInSeconds: "900" });
+} catch {
+  invalidTokenScopeFailed = true;
+}
+assert(invalidTokenScopeFailed, "token request must reject invalid max uses");
+const tokenSecretText = renderCreatedEnrollmentToken(
+  { id: "et-1", token: "enroll-secret", expires_in_seconds: 900 },
+  "https://fleet.example.com",
+  "prod-web-01",
+);
+assert(tokenSecretText.includes("enroll-secret"), "one-time token renderer must show created token");
+assert(tokenSecretText.includes("sponzey agent init"), "one-time token renderer must include init command");
+const tokenListHtml = renderEnrollmentTokens([
+  {
+    id: "et-1",
+    default_labels: "role=web",
+    max_uses: 2,
+    used_count: 1,
+    remaining_uses: 1,
+    revoked: false,
+    expires_at_epoch: 1900000000,
+  },
+]);
+assert(tokenListHtml.includes("role=web"), "token summary must include label scope");
+assert(!tokenListHtml.includes("enroll-secret"), "token summary must never include the raw token");
 assert(
   formatApiError("/api/agents", 401).includes("admin token"),
   "forbidden renderer must guide operator toward authorization",

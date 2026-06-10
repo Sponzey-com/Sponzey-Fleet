@@ -34,6 +34,28 @@
           <div id="agents-list" class="list empty">No data loaded.</div>
         </article>
 
+        <article class="panel token-panel">
+          <div class="panel-heading">
+            <h2>Enrollment</h2>
+            <span class="muted">One-time agent tokens</span>
+          </div>
+          <form id="enrollment-token-form" class="token-form">
+            <label for="token-labels">Labels</label>
+            <input id="token-labels" name="labels" autocomplete="off" placeholder="role=web,env=prod" />
+            <label for="token-max-uses">Max uses</label>
+            <input id="token-max-uses" name="max-uses" type="number" min="1" value="1" />
+            <label for="token-expiry">Expiry seconds</label>
+            <input id="token-expiry" name="expires-in-seconds" type="number" min="1" value="3600" />
+            <label for="token-controller-url">Controller URL</label>
+            <input id="token-controller-url" name="controller-url" autocomplete="off" placeholder="https://fleet.example.com" />
+            <label for="token-agent-name">Agent name</label>
+            <input id="token-agent-name" name="agent-name" autocomplete="off" placeholder="prod-web-01" />
+            <button type="submit">Create token</button>
+          </form>
+          <pre id="created-enrollment-token" class="snapshot token-secret">Create a token to show the one-time value here.</pre>
+          <div id="enrollment-tokens-list" class="list empty">No enrollment tokens loaded.</div>
+        </article>
+
         <article class="panel">
           <div class="panel-heading">
             <h2>Facts</h2>
