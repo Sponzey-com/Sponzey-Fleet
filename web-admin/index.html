@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Sponzey Fleet Admin</title>
-    <link rel="stylesheet" href="./styles.css" />
-    <script type="module" src="./app.js"></script>
+    <link rel="stylesheet" href="/admin/styles.css" />
+    <script type="module" src="/admin/app.js"></script>
   </head>
   <body>
     <main>
@@ -14,7 +14,7 @@
           <h1>Sponzey Fleet Admin</h1>
           <p>Agent inventory, snapshots, drift, and audit for the local MVP controller.</p>
         </div>
-        <form id="admin-auth" class="auth-form">
+        <form id="admin-auth" class="auth-form" method="post" action="/admin/">
           <label for="admin-token">Admin token</label>
           <input id="admin-token" name="admin-token" type="password" autocomplete="off" />
           <button type="submit">Refresh</button>

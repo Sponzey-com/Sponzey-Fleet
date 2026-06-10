@@ -116,6 +116,7 @@ pub enum ControllerSubcommand {
 }
 
 #[derive(Debug, Args)]
+#[command(about = "Manage the local Sponzey Fleet agent")]
 pub struct AgentCommand {
     #[command(subcommand)]
     pub command: AgentSubcommand,
@@ -123,44 +124,85 @@ pub struct AgentCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum AgentSubcommand {
+    #[command(
+        about = "Enroll this host as an agent",
+        long_about = "Enroll this host with a controller using a one-time enrollment token.\n\nEnrollment writes the local agent identity, private key, labels, and pinned controller fingerprint under the selected data directory. Run this once before starting the agent.",
+        after_help = "Examples:\n  sponzey agent enroll --url http://127.0.0.1:7700 --token <token> --name web-01 --labels role=web,env=dev\n  sponzey agent enroll --data-dir /var/lib/sponzey-fleet --url https://fleet.example.com --token <token> --name prod-web-01 --labels role=web,env=prod"
+    )]
     Enroll {
-        #[arg(long)]
+        #[arg(long, help = "Controller URL to enroll against")]
         url: String,
-        #[arg(long)]
+        #[arg(long, help = "One-time enrollment token created by the controller")]
         token: String,
-        #[arg(long)]
+        #[arg(long, help = "Human-readable agent name shown in inventory")]
         name: String,
-        #[arg(long, default_value = "")]
+        #[arg(
+            long,
+            default_value = "",
+            help = "Comma-separated labels used for targeting, for example role=web,env=prod"
+        )]
         labels: String,
-        #[arg(long, default_value = ".sponzey")]
+        #[arg(long, default_value = ".sponzey", help = "Agent data directory")]
         data_dir: PathBuf,
     },
+    #[command(
+        about = "Start the enrolled local agent",
+        long_about = "Start the enrolled local agent heartbeat and task loop.\n\nThe agent reads its local identity from <data-dir>/agent/agent.conf, verifies the pinned controller fingerprint, sends facts and metrics during heartbeat, and receives controller-signed tasks. The agent must be enrolled before this command can run.",
+        after_help = "Examples:\n  sponzey agent start --data-dir .sponzey --dev-insecure-loopback\n  sponzey agent start --data-dir /var/lib/sponzey-fleet\n  sponzey agent start --data-dir .sponzey --once\n\nLocal development flow:\n  sponzey controller init --data-dir .sponzey\n  sponzey enroll-token create --data-dir .sponzey --labels role=web,env=dev\n  sponzey agent enroll --data-dir .sponzey --url http://127.0.0.1:7700 --token <token> --name web-01 --labels role=web,env=dev\n  sponzey agent start --data-dir .sponzey --dev-insecure-loopback"
+    )]
     Start {
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Allow insecure HTTP/WebSocket transport only for loopback development"
+        )]
         dev_insecure_loopback: bool,
-        #[arg(long, default_value = ".sponzey")]
+        #[arg(
+            long,
+            default_value = ".sponzey",
+            help = "Directory containing agent/agent.conf and agent/agent_private.key"
+        )]
         data_dir: PathBuf,
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Send one heartbeat, process pending signed tasks once, then exit"
+        )]
         once: bool,
-        #[arg(long, default_value_t = 30)]
+        #[arg(
+            long,
+            default_value_t = 30,
+            help = "Seconds between heartbeats in continuous mode"
+        )]
         heartbeat_interval_seconds: u64,
-        #[arg(long, default_value_t = 0)]
+        #[arg(
+            long,
+            default_value_t = 0,
+            help = "Maximum reconnect attempts before exit; 0 means retry indefinitely"
+        )]
         max_reconnect_attempts: u32,
     },
+    #[command(
+        about = "Install the agent as a systemd service",
+        long_about = "Render or install the Linux systemd unit for running 'sponzey agent start'.\n\nDry-run is safe on every platform. Writing service files requires Linux and root privileges."
+    )]
     InstallService {
-        #[arg(long)]
+        #[arg(long, help = "Absolute sponzey binary path to pin in the service unit")]
         binary: Option<PathBuf>,
-        #[arg(long, default_value = "/var/lib/sponzey-fleet")]
+        #[arg(
+            long,
+            default_value = "/var/lib/sponzey-fleet",
+            help = "Persistent agent data directory used by the service"
+        )]
         data_dir: PathBuf,
-        #[arg(long)]
+        #[arg(long, help = "Linux service user")]
         user: Option<String>,
-        #[arg(long)]
+        #[arg(long, help = "Linux service group")]
         group: Option<String>,
-        #[arg(long)]
+        #[arg(long, help = "Print the unit file without writing system files")]
         dry_run: bool,
     },
+    #[command(about = "Start the installed agent systemd service")]
     StartService {
-        #[arg(long)]
+        #[arg(long, help = "Print the systemctl command without executing it")]
         dry_run: bool,
     },
 }
@@ -286,6 +328,7 @@ pub enum CliError {
     Identity(fleet_core::IdentityError),
     Store(fleet_store::StoreError),
     Http(String),
+    ControllerNotInitialized { data_dir: PathBuf },
     HighRiskConfirmationRequired,
     EmptyCommand,
     MissingPolicy,
@@ -304,6 +347,16 @@ impl Display for CliError {
             Self::Identity(error) => write!(formatter, "identity error: {error}"),
             Self::Store(error) => write!(formatter, "store error: {error:?}"),
             Self::Http(error) => write!(formatter, "http error: {error}"),
+            Self::ControllerNotInitialized { data_dir } => {
+                write!(
+                    formatter,
+                    "controller is not initialized for data dir: {}\n\nInitialize it once before starting the controller:\n\n  sponzey controller init --data-dir \"{}\"\n  sponzey controller start --host 127.0.0.1 --port 7700 --data-dir \"{}\" --dev-insecure-loopback\n\nIf you use local scripts:\n\n  ./scripts/run_controller.sh --host 127.0.0.1 --port 7700 --data-dir \"{}\" --dev-insecure-loopback",
+                    data_dir.display(),
+                    data_dir.display(),
+                    data_dir.display(),
+                    data_dir.display()
+                )
+            }
             Self::HighRiskConfirmationRequired => {
                 write!(formatter, "high-risk command requires --confirm-risk")
             }
@@ -418,6 +471,7 @@ fn execute_controller(command: ControllerCommand) -> Result<(), CliError> {
             data_dir,
         } => {
             let database_path = db.as_deref().map(parse_sqlite_database_url).transpose()?;
+            ensure_controller_initialized_for_start(&data_dir)?;
             fleet_controller::start_controller_server(fleet_controller::ControllerServerConfig {
                 host,
                 port,
@@ -1303,6 +1357,18 @@ fn agent_dir(data_dir: &Path) -> PathBuf {
 
 fn controller_db_path(data_dir: &Path) -> PathBuf {
     controller_dir(data_dir).join("fleet.db")
+}
+
+fn ensure_controller_initialized_for_start(data_dir: &Path) -> Result<(), CliError> {
+    let controller_path = controller_dir(data_dir);
+    let public_key_path = controller_path.join("controller_public.key");
+    let private_key_path = controller_path.join("controller_private.key");
+    if !controller_path.is_dir() || !public_key_path.is_file() || !private_key_path.is_file() {
+        return Err(CliError::ControllerNotInitialized {
+            data_dir: data_dir.to_path_buf(),
+        });
+    }
+    Ok(())
 }
 
 fn parse_sqlite_database_url(value: &str) -> Result<PathBuf, CliError> {
@@ -2566,6 +2632,22 @@ mod tests {
     }
 
     #[test]
+    fn controller_start_preflight_explains_missing_init() {
+        let data_dir = unique_demo_dir();
+        let error = ensure_controller_initialized_for_start(&data_dir)
+            .expect_err("missing controller init should be explained");
+        let message = error.to_string();
+
+        assert!(matches!(
+            error,
+            CliError::ControllerNotInitialized { data_dir: _ }
+        ));
+        assert!(message.contains("controller is not initialized"));
+        assert!(message.contains("sponzey controller init --data-dir"));
+        assert!(message.contains("./scripts/run_controller.sh"));
+    }
+
+    #[test]
     fn rejects_non_sqlite_controller_db_url() {
         assert!(matches!(
             parse_sqlite_database_url("postgres://localhost/fleet"),
@@ -3021,6 +3103,31 @@ postgresql.service loaded failed failed PostgreSQL database server
             "apply",
             "retention",
             "demo",
+        ] {
+            assert!(help.contains(expected), "missing help entry: {expected}");
+        }
+    }
+
+    #[test]
+    fn agent_start_help_explains_enrollment_and_examples() {
+        let mut command = Cli::command();
+        let agent = command
+            .find_subcommand_mut("agent")
+            .expect("agent command should exist");
+        let start = agent
+            .find_subcommand_mut("start")
+            .expect("agent start command should exist");
+        let help = start.render_long_help().to_string();
+
+        for expected in [
+            "Start the enrolled local agent heartbeat and task loop",
+            "agent/agent.conf",
+            "controller-signed tasks",
+            "The agent must be enrolled before this command can run",
+            "Examples:",
+            "Local development flow:",
+            "--heartbeat-interval-seconds",
+            "0 means retry indefinitely",
         ] {
             assert!(help.contains(expected), "missing help entry: {expected}");
         }

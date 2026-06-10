@@ -31,7 +31,9 @@ assert(index.includes("id=\"audit-list\""), "index must expose the audit surface
 assert(index.includes("id=\"run-command-form\""), "index must expose command execution");
 assert(index.includes("id=\"job-output\""), "index must expose job output");
 assert(index.includes("id=\"jobs-list\""), "index must expose job history");
-assert(index.includes("./app.js"), "index must load the dependency-free app script");
+assert(index.includes("/admin/app.js"), "index must load the dependency-free app script from the admin base path");
+assert(index.includes("/admin/styles.css"), "index must load styles from the admin base path");
+assert(index.includes('method="post"'), "admin auth form must not leak tokens through a query string fallback");
 assert(!index.includes("localStorage"), "UI must not store tokens in localStorage");
 assert(!index.includes("runtime config"), "UI must not expose runtime config mutation");
 assert(styles.includes(".layout"), "styles must include the admin layout");

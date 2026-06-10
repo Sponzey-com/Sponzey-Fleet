@@ -1255,6 +1255,7 @@ fn route_request_with_identity(
 }
 
 fn admin_static_response(path: &str) -> String {
+    let path = path.split_once('?').map(|(path, _)| path).unwrap_or(path);
     match path {
         "/admin" | "/admin/" | "/admin/index.html" => {
             response(200, "text/html; charset=utf-8", ADMIN_INDEX_HTML)
@@ -2461,8 +2462,12 @@ mod tests {
         let store = SqliteStore::in_memory().unwrap();
 
         let index = route_request("GET /admin HTTP/1.1\r\n\r\n", &store).unwrap();
+        let index_with_query =
+            route_request("GET /admin?admin-token=redacted HTTP/1.1\r\n\r\n", &store).unwrap();
         let css = route_request("GET /admin/styles.css HTTP/1.1\r\n\r\n", &store).unwrap();
         let js = route_request("GET /admin/app.js HTTP/1.1\r\n\r\n", &store).unwrap();
+        let js_with_query =
+            route_request("GET /admin/app.js?v=1 HTTP/1.1\r\n\r\n", &store).unwrap();
         let client = route_request("GET /admin/api-client.js HTTP/1.1\r\n\r\n", &store).unwrap();
         let schema = route_request("GET /admin/api.schema.json HTTP/1.1\r\n\r\n", &store).unwrap();
         let missing = route_request("GET /admin/missing.js HTTP/1.1\r\n\r\n", &store).unwrap();
@@ -2470,12 +2475,17 @@ mod tests {
         assert!(index.starts_with("HTTP/1.1 200"));
         assert!(index.contains("Content-Type: text/html; charset=utf-8"));
         assert!(index.contains("Sponzey Fleet Admin"));
+        assert!(index.contains("/admin/app.js"));
+        assert!(index_with_query.starts_with("HTTP/1.1 200"));
+        assert!(index_with_query.contains("Sponzey Fleet Admin"));
         assert!(css.starts_with("HTTP/1.1 200"));
         assert!(css.contains("Content-Type: text/css; charset=utf-8"));
         assert!(css.contains("color-scheme"));
         assert!(js.starts_with("HTTP/1.1 200"));
         assert!(js.contains("Content-Type: application/javascript; charset=utf-8"));
         assert!(js.contains("./api-client.js"));
+        assert!(js_with_query.starts_with("HTTP/1.1 200"));
+        assert!(js_with_query.contains("createApiClient"));
         assert!(client.starts_with("HTTP/1.1 200"));
         assert!(client.contains("/api/agents"));
         assert!(schema.starts_with("HTTP/1.1 200"));

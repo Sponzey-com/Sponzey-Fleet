@@ -16,9 +16,22 @@ fi
 case "${1:-}" in
   controller)
     shift
-    if [ "${1:-}" = "start" ]; then
-      shift
-    fi
+    case "${1:-}" in
+      ""|-h|--help)
+        exec "$BIN" controller "$@"
+        ;;
+      init)
+        shift
+        exec "$BIN" controller init "$@"
+        ;;
+      start)
+        shift
+        ;;
+    esac
+    ;;
+  init)
+    shift
+    exec "$BIN" controller init "$@"
     ;;
   start)
     shift
@@ -38,5 +51,54 @@ EOF
     exit 2
     ;;
 esac
+
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help)
+      exec "$BIN" controller start "$@"
+      ;;
+  esac
+done
+
+DATA_DIR=".sponzey"
+PREV=
+for arg in "$@"; do
+  if [ "$PREV" = "--data-dir" ]; then
+    DATA_DIR="$arg"
+    PREV=
+    continue
+  fi
+  case "$arg" in
+    --data-dir=*)
+      DATA_DIR="${arg#--data-dir=}"
+      ;;
+    --data-dir)
+      PREV="--data-dir"
+      ;;
+    *)
+      PREV=
+      ;;
+  esac
+done
+
+if [ ! -f "$DATA_DIR/controller/controller_public.key" ] || [ ! -f "$DATA_DIR/controller/controller_private.key" ]; then
+  cat >&2 <<EOF
+error: controller is not initialized for data dir: $DATA_DIR
+
+Initialize it once before starting the controller:
+
+  "$BIN" controller init --data-dir "$DATA_DIR"
+
+Then start the controller:
+
+  ./scripts/run_controller.sh --host 127.0.0.1 --port 7700 --data-dir "$DATA_DIR" --dev-insecure-loopback
+
+Equivalent explicit script form:
+
+  ./scripts/run_controller.sh controller init --data-dir "$DATA_DIR"
+  ./scripts/run_controller.sh controller start --host 127.0.0.1 --port 7700 --data-dir "$DATA_DIR" --dev-insecure-loopback
+EOF
+  exit 2
+fi
 
 exec "$BIN" controller start "$@"
