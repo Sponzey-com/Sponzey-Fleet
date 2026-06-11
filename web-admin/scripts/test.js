@@ -29,6 +29,7 @@ assert(index.includes("id=\"metrics-panel\""), "index must expose the metrics su
 assert(index.includes("id=\"drift-panel\""), "index must expose the drift surface");
 assert(index.includes("id=\"audit-list\""), "index must expose the audit surface");
 assert(index.includes("id=\"run-command-form\""), "index must expose command execution");
+assert(index.includes('value="uptime"'), "run command form must default to a safe probe command");
 assert(index.includes("id=\"job-output\""), "index must expose job output");
 assert(index.includes("id=\"jobs-list\""), "index must expose job history");
 assert(index.includes("id=\"enrollment-token-form\""), "index must expose enrollment token creation");
@@ -41,6 +42,11 @@ assert(!index.includes("localStorage"), "UI must not store tokens in localStorag
 assert(!index.includes("runtime config"), "UI must not expose runtime config mutation");
 assert(styles.includes(".layout"), "styles must include the admin layout");
 assert(app.includes("./api-client.js"), "app must use the shared API client");
+assert(app.includes("handleAgentsListClick"), "app must use delegated agent selection handling");
+assert(
+  !app.includes('querySelectorAll("[data-agent-id]")'),
+  "app must not attach per-render agent button handlers",
+);
 assert(tsconfig.compilerOptions.checkJs, "tsconfig must enable JS type checking");
 assert(schema.schema_version === "mvp-1", "API schema version must match MVP client");
 for (const endpoint of [

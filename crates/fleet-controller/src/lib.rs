@@ -49,6 +49,7 @@ const ADMIN_STYLES_CSS: &str = include_str!("../../../web-admin/styles.css");
 const ADMIN_APP_JS: &str = include_str!("../../../web-admin/app.js");
 const ADMIN_API_CLIENT_JS: &str = include_str!("../../../web-admin/api-client.js");
 const ADMIN_API_SCHEMA_JSON: &str = include_str!("../../../web-admin/api.schema.json");
+const AGENT_OFFLINE_AFTER: Duration = Duration::from_secs(90);
 
 #[derive(Debug, Clone)]
 pub struct ControllerServerConfig {
@@ -1155,6 +1156,10 @@ fn route_request_with_identity(
         return Ok(response(200, "application/json", "{\"status\":\"ok\"}\n"));
     }
 
+    if method == "GET" && path == "/favicon.ico" {
+        return Ok(response(204, "image/x-icon", ""));
+    }
+
     if method == "GET" && path == "/api/controller/identity" {
         let body = serde_json::to_string(&controller_identity_response(identity, metadata))
             .map_err(|error| ControllerError::Json(error.to_string()))?;
@@ -1761,6 +1766,7 @@ fn job_output_stream_to_str(stream: JobOutputStream) -> &'static str {
 }
 
 fn list_agents(store: &SqliteStore) -> Result<String, ControllerError> {
+    mark_stale_agents_offline_for_inventory(store)?;
     let repo = ControllerAgentInventoryRepository { store };
     let agents = ListInventoryAgents::execute(&repo)?
         .iter()
@@ -1770,6 +1776,7 @@ fn list_agents(store: &SqliteStore) -> Result<String, ControllerError> {
 }
 
 fn get_agent(agent_id: &str, store: &SqliteStore) -> Result<Option<String>, ControllerError> {
+    mark_stale_agents_offline_for_inventory(store)?;
     let agent_id = AgentId::new(agent_id).map_err(|error| ControllerError::Store(error.into()))?;
     let repo = ControllerAgentInventoryRepository { store };
     let Some(agent) = GetInventoryAgent::execute(&repo, agent_id)? else {
@@ -1779,6 +1786,18 @@ fn get_agent(agent_id: &str, store: &SqliteStore) -> Result<Option<String>, Cont
     serde_json::to_string(&response)
         .map(Some)
         .map_err(|error| ControllerError::Json(error.to_string()))
+}
+
+fn mark_stale_agents_offline_for_inventory(store: &SqliteStore) -> Result<(), ControllerError> {
+    let now = SystemTime::now();
+    let cutoff = now
+        .checked_sub(AGENT_OFFLINE_AFTER)
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let changed = store.mark_stale_agents_offline(cutoff, now)?;
+    if changed > 0 {
+        tracing::info!(offline_count = changed, "stale_agents_marked_offline");
+    }
+    Ok(())
 }
 
 fn update_agent_labels(
@@ -2881,6 +2900,7 @@ mod tests {
         let client = route_request("GET /admin/api-client.js HTTP/1.1\r\n\r\n", &store).unwrap();
         let schema = route_request("GET /admin/api.schema.json HTTP/1.1\r\n\r\n", &store).unwrap();
         let missing = route_request("GET /admin/missing.js HTTP/1.1\r\n\r\n", &store).unwrap();
+        let favicon = route_request("GET /favicon.ico HTTP/1.1\r\n\r\n", &store).unwrap();
 
         assert!(index.starts_with("HTTP/1.1 200"));
         assert!(index.contains("Content-Type: text/html; charset=utf-8"));
@@ -2900,6 +2920,7 @@ mod tests {
         assert!(client.contains("/api/agents"));
         assert!(schema.starts_with("HTTP/1.1 200"));
         assert!(schema.contains("\"schema_version\": \"mvp-1\""));
+        assert!(favicon.starts_with("HTTP/1.1 204"));
         assert!(missing.starts_with("HTTP/1.1 404"));
     }
 
@@ -3396,6 +3417,31 @@ spec:
         assert!(response.contains("\"os\":\"linux\""));
         assert!(response.contains("\"arch\":\"x86_64\""));
         assert!(response.contains("\"last_seen_age_seconds\""));
+    }
+
+    #[test]
+    fn admin_agent_inventory_marks_stale_online_agents_offline() {
+        let store = SqliteStore::in_memory().unwrap();
+        store
+            .insert_admin_token_hash(&hash_token("admin-token"))
+            .unwrap();
+        save_test_agent(&store, "agent-stale");
+        store
+            .mark_agent_online(
+                "agent-stale",
+                SystemTime::now() - AGENT_OFFLINE_AFTER - Duration::from_secs(5),
+            )
+            .unwrap();
+
+        let response = route_request(
+            "GET /api/agents HTTP/1.1\r\nAuthorization: Bearer admin-token\r\n\r\n",
+            &store,
+        )
+        .unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 200"));
+        assert!(response.contains("\"id\":\"agent-stale\""));
+        assert!(response.contains("\"status\":\"offline\""));
     }
 
     #[test]

@@ -26,6 +26,7 @@ const LOG_TAIL_POLL_INTERVAL: Duration = Duration::from_millis(100);
 #[derive(Debug, Parser)]
 #[command(name = "sponzey")]
 #[command(about = "Sponzey Fleet command line interface")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 pub struct Cli {
     #[arg(long, default_value = "product")]
     pub log_profile: LogProfileArg,
@@ -3712,6 +3713,17 @@ postgresql.service loaded failed failed PostgreSQL database server
         ] {
             assert!(help.contains(expected), "missing help entry: {expected}");
         }
+    }
+
+    #[test]
+    fn version_flag_uses_package_version() {
+        let command = Cli::command();
+        let version = command.render_version().to_string();
+
+        assert_eq!(
+            version.trim(),
+            format!("sponzey {}", env!("CARGO_PKG_VERSION"))
+        );
     }
 
     #[test]

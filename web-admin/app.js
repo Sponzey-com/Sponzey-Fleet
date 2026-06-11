@@ -2,6 +2,7 @@ import { createApiClient, normalizeAdminToken } from "./api-client.js";
 
 const state = {
   token: "",
+  agents: [],
   selectedAgentId: "",
   lastJobId: "",
   createdEnrollmentToken: null,
@@ -188,13 +189,13 @@ export function parseCommandArgs(value) {
 
 export function buildCommandJobRequest({ agentId, program, args, confirmed }) {
   if (!agentId) {
-    throw new Error("Select an agent before running a command.");
+    throw new Error("Select an agent from the Agents list before running a command.");
   }
   if (!program || !String(program).trim()) {
-    throw new Error("Program is required.");
+    throw new Error("Enter a program to run, for example uptime.");
   }
   if (!confirmed) {
-    throw new Error("High-risk command confirmation is required.");
+    throw new Error("Check Confirm high-risk execution before running the command.");
   }
   const jobId = `job-ui-${Date.now()}`;
   return {
@@ -252,20 +253,26 @@ function syncAdminTokenFromInput({ requireToken = false } = {}) {
 
 async function loadAgents() {
   const agents = await api.listAgents();
-  const selected = state.selectedAgentId || agents[0]?.id || "";
+  state.agents = Array.isArray(agents) ? agents : [];
+  const selected = state.agents.some((agent) => agent.id === state.selectedAgentId)
+    ? state.selectedAgentId
+    : state.agents[0]?.id || "";
   state.selectedAgentId = selected;
-  document.querySelector("#agent-count").textContent = `${agents.length} known`;
-  document.querySelector("#agents-list").innerHTML = renderAgents(agents, selected);
-  document.querySelectorAll("[data-agent-id]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.selectedAgentId = button.dataset.agentId;
-      refreshSelectedAgent();
-      document.querySelector("#agents-list").innerHTML = renderAgents(agents, state.selectedAgentId);
-    });
-  });
+  document.querySelector("#agent-count").textContent = `${state.agents.length} known`;
+  document.querySelector("#agents-list").innerHTML = renderAgents(state.agents, selected);
   if (selected) {
     await refreshSelectedAgent();
   }
+}
+
+function handleAgentsListClick(event) {
+  const button = event.target?.closest?.("[data-agent-id]");
+  if (!button?.dataset?.agentId) {
+    return;
+  }
+  state.selectedAgentId = button.dataset.agentId;
+  document.querySelector("#agents-list").innerHTML = renderAgents(state.agents, state.selectedAgentId);
+  refreshSelectedAgent().catch((error) => setStatus(error.message, "error"));
 }
 
 async function refreshSelectedAgent() {
@@ -410,6 +417,10 @@ function boot() {
       event.preventDefault();
       submitCommand(runForm).catch((error) => setStatus(error.message, "error"));
     });
+  }
+  const agentsList = document.querySelector("#agents-list");
+  if (agentsList) {
+    agentsList.addEventListener("click", handleAgentsListClick);
   }
   const enrollmentForm = document.querySelector("#enrollment-token-form");
   if (enrollmentForm) {

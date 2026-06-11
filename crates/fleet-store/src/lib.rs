@@ -616,7 +616,7 @@ impl SqliteStore {
         let changed = self.connection.execute(
             "UPDATE agents
              SET status = 'offline', updated_at = ?2
-             WHERE status = 'online'
+             WHERE status IN ('online', 'busy', 'degraded')
                AND last_seen_at IS NOT NULL
                AND last_seen_at < ?1",
             params![
@@ -2746,6 +2746,26 @@ mod tests {
         store.save_agent(agent()).unwrap();
         store
             .mark_agent_online("a1", SystemTime::UNIX_EPOCH + Duration::from_secs(10))
+            .unwrap();
+
+        let changed = store
+            .mark_stale_agents_offline(
+                SystemTime::UNIX_EPOCH + Duration::from_secs(20),
+                SystemTime::UNIX_EPOCH + Duration::from_secs(30),
+            )
+            .unwrap();
+
+        let found = store.find_agent_by_id("a1").unwrap().unwrap();
+        assert_eq!(changed, 1);
+        assert_eq!(found.status(), AgentStatus::Offline);
+    }
+
+    #[test]
+    fn stale_degraded_agents_transition_offline() {
+        let store = SqliteStore::in_memory().unwrap();
+        store.save_agent(agent()).unwrap();
+        store
+            .mark_agent_degraded("a1", SystemTime::UNIX_EPOCH + Duration::from_secs(10))
             .unwrap();
 
         let changed = store
