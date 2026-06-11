@@ -1288,11 +1288,7 @@ fn route_request_with_identity(
                 .trim_end_matches('/');
             match latest_facts(agent_id, store)? {
                 Some(body) => Ok(response(200, "application/json", &format!("{body}\n"))),
-                None => Ok(response(
-                    404,
-                    "application/json",
-                    "{\"error\":\"not_found\"}\n",
-                )),
+                None => Ok(response(200, "application/json", "null\n")),
             }
         }
         ("GET", path) if path.starts_with("/api/agents/") && path.ends_with("/metrics/latest") => {
@@ -1302,11 +1298,7 @@ fn route_request_with_identity(
                 .trim_end_matches('/');
             match latest_metrics(agent_id, store)? {
                 Some(body) => Ok(response(200, "application/json", &format!("{body}\n"))),
-                None => Ok(response(
-                    404,
-                    "application/json",
-                    "{\"error\":\"not_found\"}\n",
-                )),
+                None => Ok(response(200, "application/json", "null\n")),
             }
         }
         ("GET", path) if path.starts_with("/api/agents/") && path.ends_with("/drift/latest") => {
@@ -1316,11 +1308,7 @@ fn route_request_with_identity(
                 .trim_end_matches('/');
             match latest_drift_report(agent_id, store)? {
                 Some(body) => Ok(response(200, "application/json", &format!("{body}\n"))),
-                None => Ok(response(
-                    404,
-                    "application/json",
-                    "{\"error\":\"not_found\"}\n",
-                )),
+                None => Ok(response(200, "application/json", "null\n")),
             }
         }
         ("GET", path) if path.starts_with("/api/agents/") && path != "/api/agents/ws" => {
@@ -3770,6 +3758,36 @@ spec:
         assert!(response.contains("\"agent_id\":\"agent-1\""));
         assert!(response.contains("\"status\":\"drifted\""));
         assert!(response.contains("\"actual\":\"stopped\""));
+    }
+
+    #[test]
+    fn admin_latest_optional_agent_data_returns_null_when_missing() {
+        let store = SqliteStore::in_memory().unwrap();
+        store
+            .insert_admin_token_hash(&hash_token("admin-token"))
+            .unwrap();
+        save_test_agent(&store, "agent-1");
+
+        for path in [
+            "/api/agents/agent-1/facts/latest",
+            "/api/agents/agent-1/metrics/latest",
+            "/api/agents/agent-1/drift/latest",
+        ] {
+            let response = route_request(
+                &format!("GET {path} HTTP/1.1\r\nAuthorization: Bearer admin-token\r\n\r\n"),
+                &store,
+            )
+            .unwrap();
+
+            assert!(
+                response.starts_with("HTTP/1.1 200"),
+                "{path} should return a successful empty optional response"
+            );
+            assert!(
+                response.ends_with("\r\n\r\nnull\n"),
+                "{path} should return JSON null when no latest record exists"
+            );
+        }
     }
 
     #[test]

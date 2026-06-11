@@ -1,4 +1,4 @@
-import { createApiClient } from "./api-client.js";
+import { createApiClient, normalizeAdminToken } from "./api-client.js";
 
 const state = {
   token: "",
@@ -235,6 +235,21 @@ function setStatus(message, kind = "") {
   element.className = `status ${kind}`.trim();
 }
 
+function readAdminTokenInput() {
+  return normalizeAdminToken(document.querySelector("#admin-token")?.value || "");
+}
+
+function syncAdminTokenFromInput({ requireToken = false } = {}) {
+  const token = readAdminTokenInput();
+  if (token) {
+    state.token = token;
+  }
+  if (requireToken && !state.token) {
+    throw new Error("Admin token is required. Paste the token from controller init, then retry.");
+  }
+  return state.token;
+}
+
 async function loadAgents() {
   const agents = await api.listAgents();
   const selected = state.selectedAgentId || agents[0]?.id || "";
@@ -259,13 +274,32 @@ async function refreshSelectedAgent() {
     return;
   }
   const [facts, metrics, drift] = await Promise.all([
-    api.getLatestFacts(agentId),
-    api.getLatestMetrics(agentId),
-    api.getLatestDrift(agentId),
+    readOptionalAgentData("facts", () => api.getLatestFacts(agentId)),
+    readOptionalAgentData("metrics", () => api.getLatestMetrics(agentId)),
+    readOptionalAgentData("drift", () => api.getLatestDrift(agentId)),
   ]);
-  document.querySelector("#facts-panel").textContent = renderSnapshot(facts, "No facts snapshot.");
-  document.querySelector("#metrics-panel").textContent = renderSnapshot(metrics, "No metrics snapshot.");
-  document.querySelector("#drift-panel").innerHTML = renderDrift(drift);
+  document.querySelector("#facts-panel").textContent = renderSnapshot(
+    facts.value,
+    facts.error || "No facts snapshot.",
+  );
+  document.querySelector("#metrics-panel").textContent = renderSnapshot(
+    metrics.value,
+    metrics.error || "No metrics snapshot.",
+  );
+  document.querySelector("#drift-panel").innerHTML = drift.error
+    ? `<div class="empty">${escapeHtml(drift.error)}</div>`
+    : renderDrift(drift.value);
+}
+
+async function readOptionalAgentData(label, load) {
+  try {
+    return { value: await load(), error: "" };
+  } catch (error) {
+    return {
+      value: null,
+      error: `Could not load ${label}. Refresh or check controller logs.`,
+    };
+  }
 }
 
 async function refreshAll() {
@@ -298,6 +332,7 @@ async function refreshAll() {
 }
 
 async function submitEnrollmentToken(form) {
+  syncAdminTokenFromInput({ requireToken: true });
   const data = new FormData(form);
   const request = buildEnrollmentTokenRequest({
     labels: data.get("labels"),
@@ -326,12 +361,14 @@ async function loadEnrollmentTokens() {
 }
 
 async function revokeEnrollmentToken(id) {
+  syncAdminTokenFromInput({ requireToken: true });
   await api.revokeEnrollmentToken(id);
   setStatus(`Revoked enrollment token ${id}.`, "ok");
   await loadEnrollmentTokens();
 }
 
 async function submitCommand(form) {
+  syncAdminTokenFromInput({ requireToken: true });
   const data = new FormData(form);
   const request = buildCommandJobRequest({
     agentId: state.selectedAgentId,
@@ -364,7 +401,7 @@ function boot() {
   }
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    state.token = new FormData(form).get("admin-token")?.toString() || "";
+    state.token = readAdminTokenInput();
     refreshAll().catch((error) => setStatus(error.message, "error"));
   });
   const runForm = document.querySelector("#run-command-form");

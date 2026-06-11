@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Package version to validate against, for example 0.1.7. Defaults to npm/fleet/package.json."
+        description: "Package version to validate against, for example 0.1.8. Defaults to npm/fleet/package.json."
         required: false
         type: string
       dry_run:

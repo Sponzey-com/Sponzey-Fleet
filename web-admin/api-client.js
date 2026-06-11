@@ -11,16 +11,25 @@ function defaultFormatApiError(path, status) {
   return `${path} returned ${status}`;
 }
 
+export function normalizeAdminToken(value) {
+  let token = String(value ?? "").trim();
+  if (token.toLowerCase().startsWith("bearer ")) {
+    token = token.slice("bearer ".length).trim();
+  }
+  return token;
+}
+
 export function createApiClient({ fetchImpl = globalThis.fetch, tokenProvider = () => "", formatError = defaultFormatApiError } = {}) {
   if (typeof fetchImpl !== "function") {
     throw new Error("fetch implementation is required.");
   }
 
   async function request(path, options = {}) {
+    const token = normalizeAdminToken(tokenProvider());
     const response = await fetchImpl(path, {
       ...options,
       headers: {
-        Authorization: `Bearer ${tokenProvider()}`,
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         Accept: "application/json",
         ...(options.body ? { "Content-Type": "application/json" } : {}),
         ...(options.headers || {}),

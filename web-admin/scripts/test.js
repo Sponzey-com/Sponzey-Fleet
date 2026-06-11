@@ -78,8 +78,13 @@ const {
   renderCreatedEnrollmentToken,
   buildEnrollmentTokenRequest,
 } = await import(appPath);
-const { API_SCHEMA_VERSION, createApiClient } = await import(clientPath);
+const { API_SCHEMA_VERSION, createApiClient, normalizeAdminToken } = await import(clientPath);
 assert(API_SCHEMA_VERSION === schema.schema_version, "API client and schema versions must match");
+assert(normalizeAdminToken(" admin-token \n") === "admin-token", "client must trim admin tokens");
+assert(
+  normalizeAdminToken("Bearer admin-token") === "admin-token",
+  "client must accept pasted bearer tokens",
+);
 
 const calls = [];
 const client = createApiClient({
@@ -117,6 +122,59 @@ assert(calls[6].options.method === "POST", "client must POST runbook jobs");
 assert(
   calls[5].options.headers.Authorization === "Bearer admin-token",
   "client must attach bearer token",
+);
+
+const bearerCalls = [];
+const bearerClient = createApiClient({
+  tokenProvider: () => " Bearer admin-token \n",
+  fetchImpl: async (path, options) => {
+    bearerCalls.push({ path, options });
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ path }),
+    };
+  },
+});
+await bearerClient.listEnrollmentTokens();
+assert(
+  bearerCalls[0].options.headers.Authorization === "Bearer admin-token",
+  "client must normalize pasted bearer tokens before sending",
+);
+
+const unauthenticatedCalls = [];
+const unauthenticatedClient = createApiClient({
+  tokenProvider: () => "",
+  fetchImpl: async (path, options) => {
+    unauthenticatedCalls.push({ path, options });
+    return {
+      ok: false,
+      status: 401,
+      json: async () => ({ error: "unauthorized" }),
+    };
+  },
+});
+try {
+  await unauthenticatedClient.listEnrollmentTokens();
+} catch {
+  // The request is expected to fail, but it must not send a blank bearer header.
+}
+assert(
+  !("Authorization" in unauthenticatedCalls[0].options.headers),
+  "client must not attach a blank bearer token",
+);
+
+const notFoundClient = createApiClient({
+  tokenProvider: () => "admin-token",
+  fetchImpl: async () => ({
+    ok: false,
+    status: 404,
+    json: async () => ({ error: "not_found" }),
+  }),
+});
+assert(
+  (await notFoundClient.getLatestDrift("agent-1")) === null,
+  "client must treat missing optional agent data as null",
 );
 
 const agentsHtml = renderAgents([
