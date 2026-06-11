@@ -176,7 +176,8 @@ jobs:
           do
             platform="${package#fleet-}"
             binary="dist/npm/$package/bin/sponzey"
-            test -x "$binary"
+            test -f "$binary"
+            chmod +x "$binary"
             artifact_dir="dist/release/sponzey-$platform"
             mkdir -p "$artifact_dir"
             cp "$binary" "$artifact_dir/sponzey"
