@@ -12,7 +12,7 @@ MVP의 첫 작업은 agent enrollment가 아니다. 먼저 Rust workspace와 실
 
 - Rust workspace와 crate skeleton
 - `sponzey` CLI command skeleton
-- typed `Settings`, `LogProfile`, `TransportSecurityMode` bootstrap
+- typed `Settings`, `LogProfile`, controller URL validation bootstrap
 
 ## 2. 선행 조건
 
@@ -121,11 +121,11 @@ MVP의 첫 작업은 agent enrollment가 아니다. 먼저 Rust workspace와 실
   - [x] `Product`
   - [x] `FieldDebug`
   - [x] `Development`
-- [x] `TransportSecurityMode` enum을 정의한다.
+- [x] controller URL validation을 정의한다.
 
-  - [x] `TlsRequired`
-  - [x] `DevInsecureLoopbackOnly`
-- [x] `DevInsecureLoopbackOnly`는 loopback address에서만 유효하게 validation한다.
+  - [x] `http://`
+  - [x] `https://`
+- [x] HTTP controller URL은 허용하되 실행 경계에서 경고를 출력한다.
 - [x] settings는 CLI args와 최초 config file에서만 생성한다.
 - [x] runtime settings mutation API를 만들지 않는다.
 - [x] `tracing` 기반 logging bootstrap을 만든다.

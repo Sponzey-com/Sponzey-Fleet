@@ -18,7 +18,7 @@
 - [x] MVP release notes 추가
 - [x] service install 방향 문서 추가
 - [x] npm wrapper demo smoke 추가 및 통과
-- [x] dev-insecure-loopback Product 로그와 Security audit 보강
+- [x] insecure HTTP warning과 Security audit 보강
 - [x] Web Admin UI static build/test 추가 및 통과
 - [x] runbook validation-only apply smoke 추가 및 통과
 - [x] signed runbook dispatch API와 agent-side execution path 추가
@@ -57,7 +57,7 @@
 - [x] controller signing key review
 - [x] agent identity proof review
 - [x] signed task envelope verification review
-- [x] insecure loopback-only mode review
+- [x] HTTP test-only warning mode review
 - [x] high-risk confirmation review
 
 ### 검증
@@ -70,7 +70,7 @@
 - [x] expired task rejection test
 - [x] replayed task rejection test
 - [x] target mismatch task rejection test
-- [x] non-loopback insecure URL rejection test
+- [x] non-loopback HTTP warning test
 - [x] high-risk command without confirmation rejection test
 - [x] audit coverage checklist
 
@@ -152,7 +152,7 @@
 - [x] Development 로그가 production 기본값이 아님을 확인
 - [x] env var 중간 변경 코드 없음
 - [x] runtime config mutation endpoint 없음
-- [x] non-loopback insecure transport 거부
+- [x] non-loopback HTTP transport는 테스트 전용 warning 출력
 - [x] controller public key pinning 동작
 - [x] authenticated agent만 WebSocket task channel 사용 가능
 - [x] unsigned/invalid/expired/replayed task 거부

@@ -59,7 +59,6 @@ pub struct ControllerServerConfig {
     pub tls_key_path: Option<PathBuf>,
     pub data_dir: PathBuf,
     pub database_path: Option<PathBuf>,
-    pub dev_insecure_loopback: bool,
 }
 
 #[derive(Clone)]
@@ -335,7 +334,6 @@ pub enum ControllerError {
     Protocol(fleet_protocol::ProtocolError),
     Json(String),
     Tls(String),
-    InsecureRemote(String),
 }
 
 impl Display for ControllerError {
@@ -346,12 +344,6 @@ impl Display for ControllerError {
             Self::Protocol(error) => write!(formatter, "{error}"),
             Self::Json(error) => write!(formatter, "json error: {error}"),
             Self::Tls(error) => write!(formatter, "tls error: {error}"),
-            Self::InsecureRemote(host) => {
-                write!(
-                    formatter,
-                    "dev-insecure-loopback is only allowed for loopback hosts: {host}"
-                )
-            }
         }
     }
 }
@@ -400,15 +392,15 @@ where
         external_url = %config.external_url.as_deref().unwrap_or(""),
         tls_enabled = config.tls_cert_path.is_some(),
         controller_fingerprint = %identity.fingerprint,
-        dev_insecure_loopback = config.dev_insecure_loopback,
         "controller_started"
     );
-    if config.dev_insecure_loopback {
+    let insecure_http_target = insecure_http_transport_target(&config);
+    if let Some(target) = &insecure_http_target {
         tracing::warn!(
-            bind_host = %config.host,
-            "dev_insecure_loopback_enabled"
+            transport_target = %target,
+            "insecure_http_transport_enabled"
         );
-        audit_dev_insecure_loopback_enabled(&store, &config.host)?;
+        audit_insecure_http_transport_enabled(&store, target)?;
     }
     println!("controller listening on {}:{}", config.host, config.port);
     if let Some(external_url) = &config.external_url {
@@ -417,8 +409,10 @@ where
     if config.tls_cert_path.is_some() {
         println!("controller transport: https");
     }
-    if config.dev_insecure_loopback {
-        println!("warning: dev insecure loopback mode enabled");
+    if let Some(target) = &insecure_http_target {
+        eprintln!(
+            "warning: insecure HTTP controller URL enabled: {target}; HTTP is test-only and not encrypted; use HTTPS for product or production environments"
+        );
     }
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1085,16 +1079,16 @@ fn audit_security_with_value(
     Ok(())
 }
 
-fn audit_dev_insecure_loopback_enabled(
+fn audit_insecure_http_transport_enabled(
     store: &SqliteStore,
-    host: &str,
+    target: &str,
 ) -> Result<(), ControllerError> {
     store.write_audit_event(AuditEvent {
         category: AuditCategory::Security,
-        action: "dev_insecure_loopback_enabled".to_owned(),
+        action: "insecure_http_transport_enabled".to_owned(),
         actor: AuditActor::new("controller"),
-        target: AuditTarget::new(host),
-        value: AuditValue::Plain("loopback_only".to_owned()),
+        target: AuditTarget::new(target),
+        value: AuditValue::Plain("http_without_tls".to_owned()),
         occurred_at: SystemTime::now(),
     })?;
     Ok(())
@@ -2606,18 +2600,15 @@ fn response(status: u16, content_type: &str, body: &str) -> String {
 }
 
 fn validate_transport(config: &ControllerServerConfig) -> Result<(), ControllerError> {
-    if config.dev_insecure_loopback && !is_loopback_host(&config.host) {
-        return Err(ControllerError::InsecureRemote(config.host.clone()));
-    }
     match (&config.tls_cert_path, &config.tls_key_path) {
         (Some(cert_path), Some(key_path)) => {
             validate_tls_material(cert_path, key_path)?;
-            if let Some(external_url) = &config.external_url {
-                if !external_url.starts_with("https://") {
-                    return Err(ControllerError::Tls(
-                        "TLS controller external URL must start with https://".to_owned(),
-                    ));
-                }
+            if let Some(external_url) = &config.external_url
+                && !external_url.starts_with("https://")
+            {
+                return Err(ControllerError::Tls(
+                    "TLS controller external URL must start with https://".to_owned(),
+                ));
             }
         }
         (None, None) => {}
@@ -2628,7 +2619,7 @@ fn validate_transport(config: &ControllerServerConfig) -> Result<(), ControllerE
         }
     }
     if let Some(external_url) = &config.external_url {
-        validate_external_url(external_url, config.dev_insecure_loopback)?;
+        validate_external_url(external_url)?;
     }
     Ok(())
 }
@@ -2727,11 +2718,7 @@ fn validate_tls_private_key_permissions(path: &Path) -> Result<(), ControllerErr
     Ok(())
 }
 
-fn is_loopback_host(host: &str) -> bool {
-    matches!(host, "127.0.0.1" | "localhost" | "::1")
-}
-
-fn validate_external_url(url: &str, dev_insecure_loopback: bool) -> Result<(), ControllerError> {
+fn validate_external_url(url: &str) -> Result<(), ControllerError> {
     if let Some(rest) = url.strip_prefix("https://") {
         let host = external_url_host(rest)?;
         if host.is_empty() {
@@ -2744,15 +2731,31 @@ fn validate_external_url(url: &str, dev_insecure_loopback: bool) -> Result<(), C
 
     if let Some(rest) = url.strip_prefix("http://") {
         let host = external_url_host(rest)?;
-        if dev_insecure_loopback && is_loopback_host(host) {
-            return Ok(());
+        if host.is_empty() {
+            return Err(ControllerError::Json(
+                "controller external URL host cannot be empty".to_owned(),
+            ));
         }
-        return Err(ControllerError::InsecureRemote(host.to_owned()));
+        return Ok(());
     }
 
     Err(ControllerError::Json(
-        "controller external URL must start with https://, except loopback dev http://".to_owned(),
+        "controller external URL must start with http:// or https://".to_owned(),
     ))
+}
+
+fn insecure_http_transport_target(config: &ControllerServerConfig) -> Option<String> {
+    if let Some(external_url) = &config.external_url {
+        return external_url
+            .starts_with("http://")
+            .then(|| external_url.clone());
+    }
+
+    if config.tls_cert_path.is_none() {
+        return Some(format!("http://{}:{}", config.host, config.port));
+    }
+
+    None
 }
 
 fn external_url_host(rest: &str) -> Result<&str, ControllerError> {
@@ -4104,24 +4107,6 @@ spec:
     }
 
     #[test]
-    fn insecure_mode_rejects_remote_host() {
-        let config = ControllerServerConfig {
-            host: "0.0.0.0".to_owned(),
-            port: 7700,
-            external_url: None,
-            tls_cert_path: None,
-            tls_key_path: None,
-            data_dir: PathBuf::from(".sponzey"),
-            database_path: None,
-            dev_insecure_loopback: true,
-        };
-        assert!(matches!(
-            validate_transport(&config),
-            Err(ControllerError::InsecureRemote(_))
-        ));
-    }
-
-    #[test]
     fn controller_allows_remote_bind_with_https_external_url() {
         let config = ControllerServerConfig {
             host: "0.0.0.0".to_owned(),
@@ -4131,14 +4116,13 @@ spec:
             tls_key_path: None,
             data_dir: PathBuf::from(".sponzey"),
             database_path: None,
-            dev_insecure_loopback: false,
         };
 
         assert!(validate_transport(&config).is_ok());
     }
 
     #[test]
-    fn controller_rejects_remote_http_external_url() {
+    fn controller_allows_remote_http_external_url() {
         let config = ControllerServerConfig {
             host: "127.0.0.1".to_owned(),
             port: 7700,
@@ -4147,13 +4131,46 @@ spec:
             tls_key_path: None,
             data_dir: PathBuf::from(".sponzey"),
             database_path: None,
-            dev_insecure_loopback: true,
         };
 
-        assert!(matches!(
-            validate_transport(&config),
-            Err(ControllerError::InsecureRemote(_))
-        ));
+        assert!(validate_transport(&config).is_ok());
+        assert_eq!(
+            insecure_http_transport_target(&config).as_deref(),
+            Some("http://192.168.0.10:7700")
+        );
+    }
+
+    #[test]
+    fn controller_marks_plain_http_listener_without_external_url() {
+        let config = ControllerServerConfig {
+            host: "127.0.0.1".to_owned(),
+            port: 7700,
+            external_url: None,
+            tls_cert_path: None,
+            tls_key_path: None,
+            data_dir: PathBuf::from(".sponzey"),
+            database_path: None,
+        };
+
+        assert_eq!(
+            insecure_http_transport_target(&config).as_deref(),
+            Some("http://127.0.0.1:7700")
+        );
+    }
+
+    #[test]
+    fn controller_does_not_mark_https_external_url_behind_proxy_as_insecure() {
+        let config = ControllerServerConfig {
+            host: "127.0.0.1".to_owned(),
+            port: 7700,
+            external_url: Some("https://fleet.example.com".to_owned()),
+            tls_cert_path: None,
+            tls_key_path: None,
+            data_dir: PathBuf::from(".sponzey"),
+            database_path: None,
+        };
+
+        assert_eq!(insecure_http_transport_target(&config), None);
     }
 
     #[test]
@@ -4166,7 +4183,6 @@ spec:
             tls_key_path: None,
             data_dir: PathBuf::from(".sponzey"),
             database_path: None,
-            dev_insecure_loopback: false,
         };
 
         assert!(matches!(
@@ -4187,7 +4203,6 @@ spec:
             tls_key_path: Some(key_path),
             data_dir: PathBuf::from(".sponzey"),
             database_path: None,
-            dev_insecure_loopback: false,
         };
 
         assert!(validate_transport(&config).is_ok());
@@ -4254,7 +4269,6 @@ spec:
                     tls_key_path: None,
                     data_dir,
                     database_path: None,
-                    dev_insecure_loopback: true,
                 },
                 move || thread_shutdown.load(std::sync::atomic::Ordering::SeqCst),
             )
@@ -4302,7 +4316,6 @@ spec:
                     tls_key_path: Some(key_path),
                     data_dir,
                     database_path: None,
-                    dev_insecure_loopback: false,
                 },
                 move || thread_shutdown.load(std::sync::atomic::Ordering::SeqCst),
             )
@@ -4331,21 +4344,21 @@ spec:
     }
 
     #[test]
-    fn dev_insecure_loopback_start_is_audited() {
+    fn insecure_http_transport_start_is_audited() {
         let store = SqliteStore::in_memory().unwrap();
 
-        audit_dev_insecure_loopback_enabled(&store, "127.0.0.1").unwrap();
+        audit_insecure_http_transport_enabled(&store, "http://192.168.0.10:7700").unwrap();
 
         let audits = store
             .list_audit_events_by_category(AuditCategory::Security, 10)
             .unwrap();
         assert_eq!(audits.len(), 1);
-        assert_eq!(audits[0].action, "dev_insecure_loopback_enabled");
+        assert_eq!(audits[0].action, "insecure_http_transport_enabled");
         assert_eq!(audits[0].actor.as_str(), "controller");
-        assert_eq!(audits[0].target.as_str(), "127.0.0.1");
+        assert_eq!(audits[0].target.as_str(), "http://192.168.0.10:7700");
         assert_eq!(
             audits[0].value,
-            AuditValue::Plain("loopback_only".to_owned())
+            AuditValue::Plain("http_without_tls".to_owned())
         );
     }
 

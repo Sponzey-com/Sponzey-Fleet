@@ -11,7 +11,7 @@ mkdir -p "$WORK_DIR"
 INIT_OUTPUT="$("$BIN" controller init --data-dir "$WORK_DIR")"
 printf '%s\n' "$INIT_OUTPUT"
 ADMIN_TOKEN="$(printf '%s\n' "$INIT_OUTPUT" | sed -n 's/^admin token: //p')"
-"./scripts/run_controller.sh" --host 127.0.0.1 --port 7700 --data-dir "$WORK_DIR" --dev-insecure-loopback > "$WORK_DIR/controller.log" 2>&1 &
+"./scripts/run_controller.sh" --host 127.0.0.1 --port 7700 --data-dir "$WORK_DIR" --external-url http://127.0.0.1:7700 > "$WORK_DIR/controller.log" 2>&1 &
 CONTROLLER_PID="$!"
 trap 'kill "$CONTROLLER_PID" 2>/dev/null || true' EXIT INT TERM
 
@@ -36,13 +36,13 @@ fi
 
 TOKEN="$("$BIN" enroll-token create --data-dir "$WORK_DIR" --labels role=web,env=dev)"
 "$BIN" agent init --data-dir "$WORK_DIR" --url http://127.0.0.1:7700 --token "$TOKEN" --name web-01 --labels role=web,env=dev
-"./scripts/run_agent.sh" --data-dir "$WORK_DIR" --dev-insecure-loopback --once
+"./scripts/run_agent.sh" --data-dir "$WORK_DIR" --once
 curl -fsS \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"job_id":"job-remote-1","target_agent_ids":[],"selector":"role=web","program":"printf","args":["remote-ok"],"timeout_seconds":30,"confirmed_high_risk":true,"confirmed_by":"smoke-admin","expires_in_seconds":60,"nonce_prefix":"remote-smoke"}' \
   http://127.0.0.1:7700/api/jobs/command >/dev/null
-"./scripts/run_agent.sh" --data-dir "$WORK_DIR" --dev-insecure-loopback --once
+"./scripts/run_agent.sh" --data-dir "$WORK_DIR" --once
 REMOTE_OUTPUT="$(sqlite3 "$WORK_DIR/controller/fleet.db" "SELECT body FROM job_output_chunks WHERE job_id = 'job-remote-1' ORDER BY chunk_index")"
 REMOTE_STATUS="$(sqlite3 "$WORK_DIR/controller/fleet.db" "SELECT status FROM jobs WHERE id = 'job-remote-1'")"
 REMOTE_OUTPUT_API="$(curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" http://127.0.0.1:7700/api/jobs/job-remote-1/output)"
@@ -120,7 +120,7 @@ curl -fsS \
   -H "Content-Type: application/json" \
   --data-binary "@$RUNBOOK_REQUEST" \
   http://127.0.0.1:7700/api/jobs/runbook >/dev/null
-"./scripts/run_agent.sh" --data-dir "$WORK_DIR" --dev-insecure-loopback --once
+"./scripts/run_agent.sh" --data-dir "$WORK_DIR" --once
 RUNBOOK_STATUS="$(sqlite3 "$WORK_DIR/controller/fleet.db" "SELECT status FROM jobs WHERE id = 'job-runbook-1'")"
 RUNBOOK_OUTPUT="$(sqlite3 "$WORK_DIR/controller/fleet.db" "SELECT body FROM job_output_chunks WHERE job_id = 'job-runbook-1' ORDER BY chunk_index")"
 case "$RUNBOOK_STATUS:$RUNBOOK_OUTPUT" in

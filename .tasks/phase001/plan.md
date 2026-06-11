@@ -183,10 +183,10 @@ Identity:
 
 Transport:
 
-- loopback demo는 `http://127.0.0.1`을 허용한다.
-- non-loopback URL은 TLS를 요구한다.
-- insecure mode는 `--dev-insecure-loopback` 같은 명시적 이름을 사용하고 Product 로그에 남긴다.
-- insecure mode는 원격 주소에서 거부한다.
+- `http://127.0.0.1`과 non-loopback `http://` controller URL을 허용한다.
+- HTTP controller URL을 사용할 때마다 명확한 경고를 출력한다.
+- controller external URL이 HTTP면 Security audit에 남긴다.
+- HTTPS/TLS는 권장 transport로 유지한다.
 
 Task integrity:
 
@@ -336,10 +336,10 @@ TDD/검증:
 - runtime 중 settings 변경 API를 만들지 않는다.
 - `tracing` 기반 logging bootstrap 작성
 - secret redaction helper skeleton 작성
-- `TransportSecurityMode` 정의
-  - `TlsRequired`
-  - `DevInsecureLoopbackOnly`
-- `DevInsecureLoopbackOnly`는 loopback address에서만 유효하도록 validation 작성
+- controller URL validation 정의
+  - `http://`
+  - `https://`
+- HTTP controller URL은 허용하되 실행 경계에서 경고를 출력한다.
 
 TDD/검증:
 
@@ -752,7 +752,7 @@ TDD:
 - last seen update
 - reconnect backoff
 - online/offline transition
-- non-loopback insecure connection 거부
+- non-loopback HTTP connection warning
 
 TDD/검증:
 
@@ -764,7 +764,7 @@ TDD/검증:
 - reconnect policy unit test
 - last seen update integration test
 - offline transition background job test
-- non-loopback insecure websocket rejected test
+- non-loopback HTTP websocket warning test
 
 완료 기준:
 
@@ -1285,7 +1285,7 @@ TDD/검증:
 - demo command smoke
 - temp file cleanup behavior
 - port conflict behavior
-- non-loopback demo insecure rejected test
+- non-loopback demo HTTP warning test
 
 완료 기준:
 
@@ -1334,7 +1334,7 @@ TDD/검증:
 - controller signing key review
 - agent identity proof review
 - signed task envelope verification review
-- insecure loopback-only mode review
+- HTTP test-only warning mode review
 
 검증:
 
@@ -1342,7 +1342,7 @@ TDD/검증:
 - audit coverage checklist
 - command output이 app log에 섞이지 않는지 test
 - unsigned/invalid/expired/replayed task rejection tests
-- non-loopback insecure URL rejection test
+- non-loopback HTTP URL warning test
 
 완료 기준:
 
@@ -1441,7 +1441,7 @@ MVP 완료 조건:
 - Development 로그가 production 기본값이 아님을 확인
 - env var 중간 변경 코드 없음
 - runtime config mutation endpoint 없음
-- non-loopback insecure transport 거부
+- non-loopback HTTP transport warning
 - controller public key pinning 동작
 - authenticated agent만 WebSocket task channel 사용 가능
 - unsigned/invalid/expired/replayed task 거부
@@ -1457,10 +1457,10 @@ MVP demo script:
 ```bash
 npm install -g @sponzey/fleet
 sponzey controller init --db sqlite://./fleet.db
-sponzey controller start --host 127.0.0.1 --port 7700 --dev-insecure-loopback
+sponzey controller start --host 127.0.0.1 --port 7700 --external-url http://127.0.0.1:7700
 sponzey enroll-token create --labels role=web,env=dev
 sponzey agent enroll --url http://127.0.0.1:7700 --token <token> --name web-01 --labels role=web,env=dev
-sponzey agent start --dev-insecure-loopback
+sponzey agent start
 sponzey agents list
 sponzey run --selector role=web --confirm-risk "uptime"
 sponzey facts web-01
@@ -1565,8 +1565,8 @@ MVP 완료 시 있어야 할 산출물:
 4. `sponzey --help` skeleton 작성
 5. `Settings`와 `LogProfile` test 작성
 6. settings/logging bootstrap 구현
-7. `TransportSecurityMode` validation test 작성
-8. loopback-only insecure mode 구현
+7. controller URL validation test 작성
+8. insecure HTTP warning 구현
 9. `AgentIdentity` domain test 작성
 10. `Agent` domain model 구현
 11. `TaskEnvelope`와 `Job` state machine test 작성

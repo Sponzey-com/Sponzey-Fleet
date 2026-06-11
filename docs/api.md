@@ -4,18 +4,23 @@
 
 ## Transport
 
-MVP 개발 모드에서는 다음처럼 loopback에서만 insecure HTTP를 허용한다.
+HTTP와 HTTPS controller URL을 모두 허용한다. 단, HTTP는 설치 확인, 로컬
+개발, 실험실 테스트, 짧은 검증 용도로만 사용해야 한다.
+
+제품, 고객, 운영, 공동 사용, 장시간 실행 환경에서는 반드시 HTTPS를 사용해야
+한다. HTTP는 암호화되지 않으므로 controller/agent 실행 경계에서 경고를
+출력하고, controller external URL이 HTTP이면 Security audit에 기록한다.
+HTTP 사용으로 발생하는 token 노출, command 탈취, 데이터 유출, 중간자 공격,
+기타 위험이 있을 수 있다.
 
 ```bash
-sponzey controller start --host 127.0.0.1 --port 7700 --data-dir .sponzey --dev-insecure-loopback
+sponzey controller start --host 127.0.0.1 --port 7700 --data-dir .sponzey --external-url http://127.0.0.1:7700
 ```
-
-`--dev-insecure-loopback`은 `127.0.0.1`, `localhost`, `::1`에서만 허용한다. 원격 주소에서 insecure transport를 허용하지 않는다.
 
 SQLite DB 경로를 명시하려면 bootstrap 시점에 `--db sqlite://...`를 전달한다.
 
 ```bash
-sponzey controller start --host 127.0.0.1 --port 7700 --data-dir .sponzey --db sqlite:///tmp/sponzey-fleet.db --dev-insecure-loopback
+sponzey controller start --host 127.0.0.1 --port 7700 --data-dir .sponzey --db sqlite:///tmp/sponzey-fleet.db --external-url http://127.0.0.1:7700
 ```
 
 ## Health

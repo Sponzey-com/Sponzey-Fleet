@@ -83,7 +83,8 @@ Agent enrollment generates an Ed25519 key pair locally. The private key is store
 
 Security notes:
 
-- Insecure HTTP/WebSocket controller URLs are restricted to loopback hosts in the MVP.
+- HTTP/WebSocket controller URLs are test-only and emit insecure transport warnings.
+- Product, customer, production, shared, and long-running environments must use HTTPS/WSS.
 - Agent start checks the pinned controller fingerprint before opening the WebSocket.
 - WebSocket authentication failures are recorded as security audit events.
 - Enrollment tokens are not accepted on the task/heartbeat WebSocket channel.

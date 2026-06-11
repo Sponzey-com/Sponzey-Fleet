@@ -16,7 +16,7 @@
 - [x] controller/agent install-service dry-run command 구현
 - [x] systemd service unit render tests 추가
 - [x] `sponzey demo`와 npm wrapper demo smoke 구현 및 통과
-- [x] demo 시작 시 `dev-insecure-loopback` Product 로그와 Security audit 기록
+- [x] demo 시작 시 insecure HTTP 경고와 Security audit 기록
 - [x] platform optional dependency packages 추가
 - [x] systemd 실제 파일 쓰기/start-service command 구현
 - [x] `cargo test`, `cargo clippy`, npm wrapper test, local pack smoke 통과
@@ -111,7 +111,7 @@ Sponzey Fleet는 Rust core로 개발하지만, 개발자 진입 장벽을 낮추
 - [x] demo command smoke
 - [x] temp file cleanup behavior
 - [x] port conflict behavior
-- [x] non-loopback insecure transport rejected test
+- [x] non-loopback HTTP warning test
 - [x] demo Product log marks insecure loopback mode
 - [x] demo Security audit marks insecure loopback mode
 
@@ -119,7 +119,7 @@ Sponzey Fleet는 Rust core로 개발하지만, 개발자 진입 장벽을 낮추
 
 - [x] 5분 안에 local demo가 된다.
 - [x] demo mode의 insecure transport는 Product 로그와 audit에 명확히 남는다.
-- [x] remote insecure demo는 거부된다.
+- [x] remote HTTP demo는 테스트 전용 warning을 출력한다.
 
 ## 5. 기능 묶음 C. systemd install
 

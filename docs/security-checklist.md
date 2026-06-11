@@ -6,6 +6,6 @@
 - Agents pin the controller public key after enrollment.
 - Task assignments use controller-signed envelopes.
 - High-risk commands require explicit confirmation.
-- Non-loopback insecure transport is rejected.
+- HTTP transport is test-only, emits warnings, and writes Security audit when configured as the controller external URL.
+- Product, customer, production, shared, and long-running environments use HTTPS.
 - Product logs do not include command output or secret values.
-

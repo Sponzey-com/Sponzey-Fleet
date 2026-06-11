@@ -1,7 +1,7 @@
 # Task 002. TLS HTTP/WebSocket Transport
 
 상위 계획: `Phase 002`
-목표: controller HTTP API와 agent WebSocket을 HTTPS/WSS로 제공하고, loopback dev HTTP는 명시적 예외로만 유지한다.
+목표: controller HTTP API와 agent WebSocket을 HTTPS/WSS로 제공하고, HTTP 사용 시 상시 경고를 출력한다.
 상태: `[ ] 대기` `[ ] 진행 중` `[x] 완료`
 
 ## 기능 묶음
@@ -16,8 +16,8 @@
 - [x] controller start에 `--tls-cert`, `--tls-key` 인자를 추가한다.
 - [x] TLS certificate/key 파일 permission과 존재 여부를 bootstrap에서 검증한다.
 - [x] `https://` API 요청과 `wss://` agent channel을 지원한다.
-- [x] loopback `http://`는 `--dev-insecure-loopback`일 때만 유지한다.
-- [x] non-loopback `http://`는 controller/agent 양쪽에서 계속 거부한다.
+- [x] `http://`는 loopback/non-loopback 모두 허용하되 경고를 출력한다.
+- [x] non-loopback `http://` controller URL은 Security audit에 남긴다.
 - [x] TLS handshake 실패를 Product 로그에는 안전하게, FieldDebug에는 진단 가능하게 남긴다.
 
 진행 메모:
@@ -40,7 +40,7 @@
 - [x] agent start가 `wss://127.0.0.1:<port>/api/agents/ws`로 heartbeat를 보낸다.
 - [x] 잘못된 cert/key 조합은 bootstrap에서 실패한다.
 - [x] cert permission이 너무 열려 있으면 경고 또는 실패 정책이 테스트된다.
-- [x] non-loopback HTTP rejection regression test를 유지한다.
+- [x] non-loopback HTTP 허용과 warning regression test를 유지한다.
 
 ## 4. Smoke
 

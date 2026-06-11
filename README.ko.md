@@ -2,9 +2,7 @@
 
 [English](README.md)
 
-Sponzey Fleet는 agent 기반 Fleet 운영 자동화 플랫폼입니다. inbound SSH에 의존하지 않고 서버 자동화, 상태 수집, drift 확인, 명령 실행, 감사 로그, 가벼운 Web Admin UI를 실시간으로 다루기 위한 제품입니다.
-
-핵심 런타임은 Rust입니다. 내부 구현은 역할별 crate로 나뉘지만, 제품은 하나의 `sponzey` 바이너리로 배포합니다.
+Sponzey Fleet는 여러 서버나 노트북을 한 곳에서 관리하기 위한 agent 기반 운영 자동화 도구입니다. 실행 파일은 하나뿐입니다. 이름은 `sponzey`이고, 실행하는 명령에 따라 controller가 되기도 하고 agent가 되기도 합니다.
 
 ```text
 sponzey controller ...
@@ -14,71 +12,145 @@ sponzey run ...
 sponzey demo
 ```
 
-npm 패키지는 Rust 바이너리를 배포하기 위한 wrapper입니다. 런타임 아키텍처가 Node.js라는 의미는 아닙니다.
+핵심 런타임은 Rust입니다. npm 패키지는 Rust 바이너리를 설치하기 위한 도구일 뿐입니다.
 
-## 무엇을 하는가
+## 아주 간단한 그림
 
-Sponzey Fleet의 현재 MVP는 아래 control loop에 집중합니다.
+| 구분         | 어디서 실행하나                  | 하는 일                                                                        |
+| ---------- | ------------------------- | --------------------------------------------------------------------------- |
+| Controller | 관리자가 브라우저로 접속하는 컴퓨터 또는 서버 | DB를 저장하고, Web Admin UI를 열어주고, agent 등록 token을 만들고, agent 연결을 받고, 작업에 서명합니다. |
+| Agent      | 관리 대상 컴퓨터 또는 서버마다 하나씩     | controller에 접속하고, health/facts/metrics를 보내고, controller가 서명한 작업을 실행합니다.     |
 
-- 로컬 controller 초기화와 1회용 admin token 생성,
-- enrollment token 생성,
-- outbound agent 등록,
-- agent의 controller identity fingerprint pinning,
-- 인증된 WebSocket heartbeat 수신,
-- controller-signed task dispatch,
-- command output, facts, metrics, drift report, jobs, audit event 수집,
-- controller의 `/admin` 경로에서 가벼운 Web Admin UI 서빙.
+Controller 하나에 agent 여러 대가 붙습니다.
 
-이 프로젝트는 Ansible 전체 호환 시스템이 아닙니다. 제품 방향은 Ansible 류 자동화, agent 기반 fleet 도구, runner 시스템, 감사 가능한 runbook 플랫폼의 장점만 가져오되 첫 제품을 작고, 테스트 가능하고, 기본적으로 안전하게 유지하는 것입니다.
+헷갈리기 쉬운 단어:
 
-## 빠른 스토리: Agent 하나를 초기화하고 Web UI 열기
+| 단어               | 뜻                                                             |
+| ---------------- | ------------------------------------------------------------- |
+| Data directory   | Sponzey가 key, DB, 로컬 설정을 저장하는 폴더입니다. 로컬 예시는 `.sponzey`를 씁니다.  |
+| Admin token      | `sponzey controller init`이 출력합니다. Web Admin UI와 보호 API에만 씁니다. |
+| Enrollment token | `sponzey enroll-token create`가 출력합니다. agent를 등록할 때 한 번 씁니다.   |
+| Controller URL   | agent가 controller에 접속할 주소입니다. URL이 로컬이든 HTTPS든 설정 순서는 같습니다.   |
 
-이 스토리는 npm 패키지가 이미 설치되어 있다고 가정합니다. 설치 단계는 여기서 의도적으로 생략합니다.
+## 설치
 
 ```bash
 npm install -g @sponzey/fleet
 sponzey --help
 ```
 
-소스 저장소에서 로컬 개발로 실행할 때는 Rust CLI를 빌드한 뒤 예시의 `sponzey`를 `./target/debug/sponzey`로 바꾸면 됩니다.
+이 저장소에서 직접 실행하려면:
 
 ```bash
 cargo build -p fleet-cli
 ./target/debug/sponzey --help
 ```
 
-### 1. 로컬 Controller 시작
+소스 빌드를 쓰는 경우 아래 예시의 `sponzey`를 `./target/debug/sponzey`로 바꾸면 됩니다.
 
-데모용 로컬 data directory를 사용합니다.
+## 가장 빠른 데모
+
+```bash
+sponzey demo
+```
+
+임시 controller를 띄우고, 임시 agent를 등록하고, sample job을 실행한 뒤 Web Admin URL을 출력합니다.
+
+## Transport 안전 경고
+
+HTTP controller URL은 설치 확인, 로컬 개발, 실험실 테스트, 짧은 검증 용도로만
+지원합니다. HTTP는 반드시 테스트 전용 transport로 취급해야 합니다.
+
+제품, 고객, 운영, 공동 사용, 장시간 실행 환경에서는 반드시 HTTPS를 사용해야
+합니다. HTTP로 Sponzey를 실행하면 controller-agent 통신이 암호화되지
+않습니다. HTTP transport는 기밀성이나 무결성 보장을 제공하지 않으며 token,
+command, 운영 데이터, traffic이 노출되거나 중간자 공격을 받을 수 있습니다.
+
+## 먼저 값만 정하기
+
+설정 순서는 항상 같습니다. 아래 예시는 먼저 그대로 복사해서 확인할 수
+있도록 로컬 값으로 되어 있습니다.
+
+```text
+DATA_DIR:        .sponzey
+CONTROLLER_URL: http://127.0.0.1:7700
+```
+
+실제 원격 controller로 옮길 때는 값만 바꿉니다.
+
+- data directory는 `/var/lib/sponzey-fleet` 같은 운영용 경로를 씁니다.
+- controller URL은 `http://192.168.0.10:7700` 또는 `https://fleet.example.com` 같은 주소를 씁니다.
+- `http://`는 테스트 용도로만 사용합니다. 제품 또는 운영 환경에서는 `https://`를 사용합니다.
+- controller URL이 `http://`로 시작하면 controller-agent 통신이 암호화되지 않으므로 Sponzey가 실행할 때마다 경고를 출력합니다.
+- HTTPS를 쓰려면 먼저 [HTTPS 준비](#https-준비)를 끝내면 됩니다.
+
+## 하나의 설정 흐름
+
+로컬 테스트, SSH tunnel 개발, 테스트 전용 HTTP 원격 사용, HTTPS 원격 사용
+모두 순서는 같습니다. 여기의 명령은 로컬에서 먼저 복사해 실행해보는
+버전입니다. 실제 원격 controller로 사용할 때는 data directory, controller
+URL, 이름, label, token 값만 바꿉니다.
+
+### 1. Controller 초기화
+
+Controller 컴퓨터에서 처음 한 번 실행합니다.
 
 ```bash
 sponzey controller init --data-dir .sponzey
 ```
 
-`controller init`은 1회용 admin token을 출력합니다. 이 값을 복사해두세요. Web Admin UI를 열거나 보호된 API를 호출할 때 필요합니다.
+이 명령이 출력하는 `admin token`을 복사해두세요. Web Admin UI에 붙여넣습니다.
 
-별도 터미널에서 controller를 시작합니다.
+### 2. Controller 시작
 
 ```bash
 sponzey controller start \
   --host 127.0.0.1 \
   --port 7700 \
   --data-dir .sponzey \
-  --external-url http://127.0.0.1:7700 \
-  --dev-insecure-loopback
+  --external-url http://127.0.0.1:7700
 ```
 
-`--dev-insecure-loopback`은 로컬 `127.0.0.1` 개발 전용입니다. 원격 또는 운영 배포에서 사용하면 안 됩니다.
+Controller 터미널은 계속 켜둡니다.
 
-### 2. Enroll로 Agent 초기화
+### 3. Web Admin 열기
 
-Sponzey Fleet에서 agent 초기화는 enrollment로 수행합니다. Controller가 짧게 쓰는 enrollment token을 만들고, agent는 같은 data directory에 자기 identity와 pinned controller fingerprint를 저장합니다.
+Controller URL 뒤에 `/admin`을 붙여 엽니다.
+
+```text
+http://127.0.0.1:7700/admin
+```
+
+1단계에서 복사한 admin token을 붙여넣습니다.
+
+### 4. Enrollment token 만들기
+
+Controller 컴퓨터에서 실행합니다.
 
 ```bash
 TOKEN=$(sponzey enroll-token create \
   --data-dir .sponzey \
   --labels role=web,env=dev)
+```
 
+이 token은 agent 등록용입니다. admin token과 다릅니다.
+
+바로 실행 가능한 agent 명령까지 출력하려면:
+
+```bash
+sponzey enroll-token create \
+  --data-dir .sponzey \
+  --labels role=web,env=dev \
+  --controller-url http://127.0.0.1:7700 \
+  --name web-01 \
+  --print-init-command
+```
+
+### 5. Agent 초기화
+
+Agent 컴퓨터에서 처음 한 번 실행합니다.
+
+```bash
 sponzey agent init \
   --data-dir .sponzey \
   --url http://127.0.0.1:7700 \
@@ -87,192 +159,193 @@ sponzey agent init \
   --labels role=web,env=dev
 ```
 
-`sponzey agent init`은 최초 설정 명령입니다. `sponzey agent enroll`은 controller enrollment 흐름을 명확히 설명하거나 기존 사용법을 유지하기 위한 호환 별칭으로 계속 사용할 수 있습니다.
+### 6. Agent 시작
 
-Agent를 한 번 실행해서 heartbeat, facts, metrics를 보낸 뒤 종료합니다.
+한 번만 확인하려면:
 
 ```bash
 sponzey agent start \
   --data-dir .sponzey \
-  --dev-insecure-loopback \
   --once
 ```
 
-Agent를 foreground loop로 계속 실행하려면 `--once`를 빼면 됩니다.
+로컬 agent를 계속 켜두려면:
 
 ```bash
 sponzey agent start \
-  --data-dir .sponzey \
-  --dev-insecure-loopback
+  --data-dir .sponzey
 ```
 
-로컬 개발 스크립트도 같은 단일 바이너리를 감싼 것입니다.
+Web Admin을 새로고침하면 agent 목록에 나타납니다.
+
+## HTTPS 준비
+
+제품, 고객, 운영, 공동 사용, 장시간 실행 환경에서는 이 준비가 필요합니다.
+HTTP도 동작하지만 테스트 전용이며, Sponzey가 insecure HTTP 경고를 계속
+출력합니다.
+
+HTTPS를 제공하는 방법은 보통 두 가지입니다. 이 섹션은 두 번째 설정 흐름이
+아니라 HTTPS 준비입니다.
+
+HTTPS 준비가 끝나면 [하나의 설정 흐름](#하나의-설정-흐름)으로 돌아가서
+로컬 값을 아래처럼 바꿉니다.
+
+- `http://127.0.0.1:7700`을 HTTPS controller URL로 바꿉니다.
+- 필요하면 `.sponzey`를 운영용 data directory로 바꿉니다.
+- `agent start`는 운영용 data directory를 넣습니다.
+
+HTTPS 인증서가 사설 CA 또는 self-signed라면 `agent init`에 아래 옵션도
+추가합니다.
 
 ```bash
-./scripts/run_controller.sh --host 127.0.0.1 --port 7700 --data-dir .sponzey --external-url http://127.0.0.1:7700 --dev-insecure-loopback
-./scripts/run_agent.sh --data-dir .sponzey --dev-insecure-loopback
+--tls-ca-cert /path/to/ca.pem
 ```
 
-### 다른 노트북에서 SSH Tunnel로 개발 접속
+### Sponzey 내장 HTTPS
 
-다른 노트북에서 붙일 때도 LAN `http://192.168.x.x:7700` controller URL을 쓰면 안 됩니다. MVP는 loopback이 아닌 insecure HTTP를 의도적으로 거부합니다. Controller 노트북에서는 controller를 loopback에만 bind하고, agent 노트북에서 SSH port forwarding으로 접근하게 만듭니다.
+Controller 컴퓨터에 아래 파일을 준비합니다.
 
-Controller 노트북에서:
+```text
+/etc/sponzey/tls/fullchain.pem
+/etc/sponzey/tls/privkey.pem
+```
+
+private key는 다른 사용자가 읽을 수 없어야 합니다.
 
 ```bash
-sponzey controller init --data-dir .sponzey
+sudo chmod 600 /etc/sponzey/tls/privkey.pem
+```
 
+Controller를 시작합니다.
+
+```bash
+sponzey controller start \
+  --host 0.0.0.0 \
+  --port 7700 \
+  --data-dir /var/lib/sponzey-fleet \
+  --external-url https://fleet.example.com:7700 \
+  --tls-cert /etc/sponzey/tls/fullchain.pem \
+  --tls-key /etc/sponzey/tls/privkey.pem
+```
+
+### Reverse proxy HTTPS
+
+Nginx, Caddy, load balancer 같은 도구가 HTTPS를 처리하는 방식입니다. 이 경우 Sponzey는 loopback에만 열어도 됩니다.
+
+```bash
 sponzey controller start \
   --host 127.0.0.1 \
   --port 7700 \
-  --data-dir .sponzey \
-  --external-url http://127.0.0.1:7700 \
-  --dev-insecure-loopback
+  --data-dir /var/lib/sponzey-fleet \
+  --external-url https://fleet.example.com
 ```
 
-Enrollment token은 controller 노트북에서 만들고, 그 token 값만 agent 노트북으로 복사합니다.
+Proxy는 HTTPS 요청을 `127.0.0.1:7700`으로 전달하면 됩니다.
+
+## SSH Tunnel 개발
+
+SSH tunnel 개발도 설정 순서는 같습니다. 차이는 agent가 tunnel을 통해 local URL로 controller에 접속한다는 점뿐입니다.
+
+Agent 컴퓨터에서 아래 명령을 계속 켜둡니다.
 
 ```bash
-sponzey enroll-token create --data-dir .sponzey --labels role=web,env=dev
+ssh -N -L 7700:127.0.0.1:7700 <user>@<controller-host>
 ```
 
-Agent 노트북에서 tunnel을 열고 계속 유지합니다.
-
-```bash
-ssh -N -L 7700:127.0.0.1:7700 <user>@<controller-laptop-hostname-or-ip>
-```
-
-Agent 노트북의 다른 터미널에서 tunnel을 통해 agent를 초기화하고 실행합니다.
-
-```bash
-sponzey agent init \
-  --data-dir .sponzey \
-  --url http://127.0.0.1:7700 \
-  --token "<controller-laptop에서-만든-enrollment-token>" \
-  --name laptop-02 \
-  --labels role=dev-laptop,env=dev
-
-sponzey agent start \
-  --data-dir .sponzey \
-  --dev-insecure-loopback
-```
-
-Agent가 실행되는 동안 SSH tunnel은 열려 있어야 합니다. 운영용 원격 enrollment와 agent traffic은 insecure HTTP가 아니라 HTTPS/TLS로 처리해야 합니다.
-
-### 3. Web Admin UI에서 Agent 보기
-
-아래 주소를 엽니다.
+그 다음 agent 컴퓨터에서는 아래 URL을 사용합니다.
 
 ```text
-http://127.0.0.1:7700/admin
+http://127.0.0.1:7700
 ```
 
-`sponzey controller init`이 출력한 1회용 admin token을 붙여넣습니다.
+Controller 컴퓨터의 LAN IP에 plain `http://`를 붙여도 동작합니다. 다만
+Sponzey가 insecure HTTP 경고를 출력합니다.
 
-MVP Web Admin UI는 의도적으로 가볍게 유지합니다. Controller가 직접 서빙하므로 별도 Node.js web server가 필요하지 않습니다. UI에서는 다음을 확인할 수 있습니다.
+## 로컬 스크립트
 
-- 등록된 agents와 labels,
-- 최신 facts와 metrics,
-- 최신 drift 결과,
-- 명시적 high-risk confirmation을 포함한 command job 생성,
-- job output,
-- 최근 jobs,
-- audit events.
+스크립트는 같은 단일 바이너리를 감싼 shortcut입니다.
 
-### 4. Agent 삭제하기
+```bash
+./scripts/run_controller.sh --host 127.0.0.1 --port 7700 --data-dir .sponzey --external-url http://127.0.0.1:7700
+./scripts/run_agent.sh --data-dir .sponzey
+```
 
-현재 MVP에서 가능한 정리는 로컬 agent identity와 설정을 제거하는 방식입니다. 먼저 agent process를 중지한 뒤 로컬 agent directory를 삭제합니다.
+중요:
+
+- `run_controller.sh`는 `sponzey controller start`만 감쌉니다.
+- `run_agent.sh`는 `sponzey agent start`만 감쌉니다.
+- 스크립트가 `controller init`, `enroll-token create`, `agent init`을 대신 실행하지 않습니다.
+- `scripts/run_agent.sh controller ...`처럼 실행하면 안 됩니다. agent 전용 스크립트입니다.
+
+## Agent 삭제하기
+
+먼저 agent를 중지합니다.
+
+systemd service로 설치했다면:
+
+```bash
+sponzey agent uninstall-service --dry-run
+sudo sponzey agent uninstall-service
+```
+
+그 다음 로컬 agent directory를 삭제합니다.
 
 ```bash
 rm -rf .sponzey/agent
 ```
 
-Controller 쪽 inventory와 audit records는 추적 가능성을 위해 의도적으로 보존합니다. 같은 host를 다시 사용하려면 새 enrollment token을 만들고 `sponzey agent init`을 다시 실행합니다.
-
-제품 수준의 삭제 또는 비활성화는 감사 가능한 controller-side 흐름이어야 합니다. 예시는 아래와 같습니다.
+운영용 data directory라면:
 
 ```bash
-sponzey agents disable <agent-id>
-sponzey agents delete <agent-id> --confirm
+sudo rm -rf /var/lib/sponzey-fleet/agent
 ```
 
-위의 감사 가능한 controller-side 삭제 명령은 제품 방향이며, 현재 MVP command surface는 아닙니다.
+Controller inventory와 audit 기록은 남습니다. 같은 host를 다시 쓰려면 새 enrollment token을 만들고 `sponzey agent init`을 다시 실행합니다.
 
-## 한 번에 실행하는 로컬 데모
-
-로컬에서 제품 흐름을 빠르게 보고 싶다면 다음을 실행합니다.
+전체 초기화는 data directory 전체를 삭제하면 됩니다.
 
 ```bash
-sponzey demo
+rm -rf .sponzey
 ```
 
-Demo는 로컬 controller를 시작하고, 로컬 agent를 등록하고, sample job을 실행한 뒤 Web Admin URL을 출력합니다.
+## 자주 나는 오류
 
-## Help
+### `controller is not initialized`
 
-사용 가능한 명령은 help로 확인합니다.
+같은 data directory로 `controller init`을 한 번 실행해야 합니다.
 
-```bash
-sponzey --help
-sponzey controller --help
-sponzey controller start --help
-sponzey agent --help
-sponzey agent init --help
-sponzey agent start --help
-```
+### `unable to open database file`
 
-로컬 wrapper script는 역할별로 나뉘어 있습니다.
+대부분 controller data directory가 초기화되지 않은 경우입니다. 먼저 `sponzey controller init --data-dir ...`를 실행하세요.
 
-```bash
-./scripts/run_controller.sh --help
-./scripts/run_agent.sh --help
-```
+### `agent is not enrolled`
 
-## 안전 모델
+`sponzey agent start ...` 전에 `sponzey agent init ...`을 먼저 실행해야 합니다.
 
-Sponzey Fleet는 원격 운영 플랫폼이며, 관리 대상 host에서 root로 실행될 수 있습니다. 따라서 MVP부터 아래 경계를 엄격히 둡니다.
+### `warning: insecure HTTP controller URL enabled`
 
-- agent는 controller로 outbound 연결합니다.
-- enrollment token은 1회 등록 입력으로 사용합니다.
-- agent는 controller signing fingerprint를 pinning합니다.
-- TLS certificate trust는 transport를 보호하고, controller signing fingerprint는 제품 identity를 보호합니다.
-- TLS certificate 교체는 pinned controller signing fingerprint가 같으면 허용됩니다.
-- controller signing key 변경은 명시적 agent 재등록 또는 향후 audit 기반 rotation flow가 필요합니다.
-- task envelope은 controller가 서명합니다.
-- unsigned, expired, replayed, target mismatch task는 agent가 거부합니다.
-- high-risk command는 명시적 confirmation이 필요합니다.
-- command output은 application log와 분리해서 저장합니다.
-- secret은 logs와 audit 성격의 surface에서 redact합니다.
-- loopback이 아닌 insecure transport는 거부합니다.
+오류가 아닙니다. controller URL이 `http://`로 시작해서 controller-agent
+통신이 암호화되지 않는다는 뜻입니다. HTTP는 테스트 전용입니다. 제품, 고객,
+운영, 공동 사용, 장시간 실행 환경에서는 반드시 HTTPS를 사용해야 합니다.
+HTTP transport는 기밀성이나 무결성 보장을 제공하지 않습니다.
+
+### Web Admin에서 `{"error":"not_found"}`가 보임
+
+API 주소를 연 것입니다. `/admin`으로 열어야 합니다.
+
+### 어떤 token을 어디에 넣나?
+
+- Web Admin UI: `sponzey controller init`이 출력한 admin token
+- Agent init: `sponzey enroll-token create`가 출력한 enrollment token
 
 ## 개발 검증
-
-변경을 ready로 보기 전 로컬 release gate를 실행합니다.
-
-```bash
-./scripts/release_readiness_gate.sh
-```
-
-좁은 범위의 유용한 확인 명령은 아래와 같습니다.
 
 ```bash
 cargo fmt --all --check
 cargo test --workspace
 cargo clippy --workspace --all-targets
+npm test --workspace @sponzey/fleet
 npm test --workspace web-admin
 npm run build --workspace web-admin
 ./scripts/smoke_mvp.sh
 ```
-
-## 프로젝트 방향
-
-현재 MVP는 의도적으로 작게 유지합니다. 다음 제품 단계는 아래 방향입니다.
-
-- production TLS deployment,
-- 감사 가능한 agent disable/delete,
-- 더 견고한 service installation path,
-- controller-side retention worker,
-- 더 풍부한 runbook execution,
-- production key rotation,
-- Web Admin UI용 generated API client,
-- npm, standalone binary, OS package 기반 packaged release.

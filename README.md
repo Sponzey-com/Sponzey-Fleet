@@ -2,9 +2,8 @@
 
 [한국어 문서](README.ko.md)
 
-Sponzey Fleet is an agent-based fleet operations platform. It is designed for teams that need real-time server automation, state collection, drift checks, command execution, audit logs, and a lightweight Web Admin UI without relying on inbound SSH access.
-
-The core runtime is Rust. The project is split into focused crates internally, but the product is distributed as one `sponzey` binary:
+Sponzey Fleet is an agent-based server operations tool. It is distributed as one
+`sponzey` binary. The role is selected by the command you run.
 
 ```text
 sponzey controller ...
@@ -14,71 +13,148 @@ sponzey run ...
 sponzey demo
 ```
 
-The npm package is a distribution wrapper for the Rust binary. It is not the runtime architecture.
+The core runtime is Rust. The npm package only installs the Rust binary.
 
-## What It Does
+## Simple Picture
 
-Sponzey Fleet currently focuses on the MVP control loop:
+| Part       | Where it runs                           | What it does                                                                                       |
+| ---------- | --------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Controller | The machine operators open in a browser | Stores the database, serves Web Admin UI, creates enrollment tokens, receives agents, signs tasks. |
+| Agent      | Each machine you want to manage         | Connects to the controller, sends health/facts/metrics, runs controller-signed tasks.              |
 
-- initialize a local controller with a one-time admin token,
-- create enrollment tokens,
-- enroll an outbound agent,
-- pin the controller identity on the agent,
-- receive authenticated WebSocket heartbeats,
-- dispatch controller-signed tasks,
-- collect command output, facts, metrics, drift reports, jobs, and audit events,
-- serve a lightweight Web Admin UI from the controller at `/admin`.
+One controller can manage many agents.
 
-This is not a full Ansible-compatible system. The product direction is to take the best parts of Ansible-like automation, agent-based fleet tools, runner systems, and audited runbook platforms while keeping the first product small, testable, and secure by default.
+Important terms:
 
-## Quick Story: Initialize One Agent And Open The Web UI
+| Term             | Meaning                                                                                                   |
+| ---------------- | --------------------------------------------------------------------------------------------------------- |
+| Data directory   | Folder where Sponzey stores keys, database, and local settings. Local examples use `.sponzey`.            |
+| Admin token      | Printed by `sponzey controller init`. Use it only for the Web Admin UI and protected APIs.                |
+| Enrollment token | Created by `sponzey enroll-token create`. Use it once when registering an agent.                          |
+| Controller URL   | Address agents use to reach the controller. The setup flow is the same whether the URL is local or HTTPS. |
 
-This story assumes the npm package is already installed. Installation is intentionally skipped here.
+## Install
 
 ```bash
 npm install -g @sponzey/fleet
 sponzey --help
 ```
 
-For local source development, build the Rust CLI and replace `sponzey` in the examples with `./target/debug/sponzey`:
+From this source repository:
 
 ```bash
 cargo build -p fleet-cli
 ./target/debug/sponzey --help
 ```
 
-### 1. Start A Local Controller
+If you use the source build, replace `sponzey` below with `./target/debug/sponzey`.
 
-Use a local data directory for the demo:
+## Fastest Demo
+
+```bash
+sponzey demo
+```
+
+This starts a temporary controller, enrolls a temporary agent, runs a sample job,
+and prints the Web Admin URL.
+
+## Transport Safety Warning
+
+HTTP controller URLs are supported for setup checks, local development, lab
+testing, and short-lived validation only. Treat HTTP as a test-only transport.
+
+For any product, customer, production, shared, or long-running environment, you
+must use HTTPS. If you choose to run Sponzey over HTTP, controller-agent traffic
+is not encrypted. HTTP transport provides no confidentiality or integrity
+guarantee and can expose tokens, commands, operational data, and traffic to
+man-in-the-middle attacks.
+
+## Pick Your Values First
+
+The setup steps are always the same. The examples below use local values so you
+can copy them first:
+
+```text
+DATA_DIR:        .sponzey
+CONTROLLER_URL: http://127.0.0.1:7700
+```
+
+When you move to a real remote controller, change only the values:
+
+- Use a production data directory such as `/var/lib/sponzey-fleet`.
+- Use a controller URL such as `http://192.168.0.10:7700` or `https://fleet.example.com`.
+- Use `http://` only for tests. Use `https://` for product or production use.
+- If the controller URL starts with `http://`, Sponzey prints a warning every time because controller-agent traffic is not encrypted.
+- If you want HTTPS, finish [HTTPS Preparation](#https-preparation) first.
+
+## One Setup Flow
+
+Use this same order for local testing, SSH tunnel development, test-only HTTP
+remote use, and HTTPS remote use. The commands here are the local copy-and-paste
+version. For a real remote controller, replace only the data directory,
+controller URL, name, labels, and token.
+
+### 1. Initialize The Controller
+
+Run once on the controller machine:
 
 ```bash
 sponzey controller init --data-dir .sponzey
 ```
 
-`controller init` prints a one-time admin token. Copy it. The token is needed when you open the Web Admin UI or call protected APIs.
+Copy the `admin token` printed by this command. You will paste it into the Web
+Admin UI.
 
-Start the controller in a separate terminal:
+### 2. Start The Controller
 
 ```bash
 sponzey controller start \
   --host 127.0.0.1 \
   --port 7700 \
   --data-dir .sponzey \
-  --external-url http://127.0.0.1:7700 \
-  --dev-insecure-loopback
+  --external-url http://127.0.0.1:7700
 ```
 
-`--dev-insecure-loopback` is only for local `127.0.0.1` development. Do not use it for remote or production deployments.
+Keep the controller terminal open.
 
-### 2. Initialize The Agent By Enrolling It
+### 3. Open Web Admin
 
-In Sponzey Fleet, an agent is initialized by enrollment. The controller creates a short-lived enrollment token, and the agent stores its local identity and pinned controller fingerprint in the same data directory.
+Open the controller URL with `/admin` at the end.
+
+```text
+http://127.0.0.1:7700/admin
+```
+
+Paste the admin token from step 1.
+
+### 4. Create An Enrollment Token
+
+Run this on the controller machine:
 
 ```bash
 TOKEN=$(sponzey enroll-token create \
   --data-dir .sponzey \
   --labels role=web,env=dev)
+```
 
+This token is for the agent. It is not the admin token.
+
+You can also print a ready-to-run agent command:
+
+```bash
+sponzey enroll-token create \
+  --data-dir .sponzey \
+  --labels role=web,env=dev \
+  --controller-url http://127.0.0.1:7700 \
+  --name web-01 \
+  --print-init-command
+```
+
+### 5. Initialize The Agent
+
+Run once on the agent machine:
+
+```bash
 sponzey agent init \
   --data-dir .sponzey \
   --url http://127.0.0.1:7700 \
@@ -87,192 +163,196 @@ sponzey agent init \
   --labels role=web,env=dev
 ```
 
-`sponzey agent init` is the first-time setup command. `sponzey agent enroll` remains available as a compatibility alias when you want to describe the controller enrollment flow explicitly.
+### 6. Start The Agent
 
-Start the agent once to send a heartbeat, facts, and metrics, then exit:
+For a one-time check:
 
 ```bash
 sponzey agent start \
   --data-dir .sponzey \
-  --dev-insecure-loopback \
   --once
 ```
 
-For a foreground agent loop, omit `--once`:
+For a continuous local agent:
 
 ```bash
 sponzey agent start \
-  --data-dir .sponzey \
-  --dev-insecure-loopback
+  --data-dir .sponzey
 ```
 
-Local development scripts wrap the same single binary:
+Refresh Web Admin. The agent should appear in the agent list.
+
+## HTTPS Preparation
+
+You need this section for product, customer, production, shared, or long-running
+use. HTTP works without this section, but HTTP is test-only and Sponzey will
+keep printing an insecure HTTP warning.
+
+There are two common ways to provide HTTPS. This section is preparation, not a
+second setup flow.
+
+After HTTPS is ready, go back to [One Setup Flow](#one-setup-flow) and replace
+the local values:
+
+- `http://127.0.0.1:7700` becomes your HTTPS controller URL.
+- `.sponzey` becomes your production data directory if needed.
+- `agent start` uses the production data directory.
+
+If your HTTPS certificate is private or self-signed, add this to `agent init`:
 
 ```bash
-./scripts/run_controller.sh --host 127.0.0.1 --port 7700 --data-dir .sponzey --external-url http://127.0.0.1:7700 --dev-insecure-loopback
-./scripts/run_agent.sh --data-dir .sponzey --dev-insecure-loopback
+--tls-ca-cert /path/to/ca.pem
 ```
 
-### Remote Laptop Development With SSH Tunnel
+### Built-In HTTPS
 
-For another laptop, do not use a LAN `http://192.168.x.x:7700` controller URL. The MVP intentionally rejects non-loopback insecure HTTP. Keep the controller bound to loopback on the controller laptop, then expose it to the agent laptop with SSH port forwarding.
+Prepare these files on the controller machine:
 
-On the controller laptop:
+```text
+/etc/sponzey/tls/fullchain.pem
+/etc/sponzey/tls/privkey.pem
+```
+
+The private key must not be readable by other users.
 
 ```bash
-sponzey controller init --data-dir .sponzey
+sudo chmod 600 /etc/sponzey/tls/privkey.pem
+```
 
+Start the controller:
+
+```bash
+sponzey controller start \
+  --host 0.0.0.0 \
+  --port 7700 \
+  --data-dir /var/lib/sponzey-fleet \
+  --external-url https://fleet.example.com:7700 \
+  --tls-cert /etc/sponzey/tls/fullchain.pem \
+  --tls-key /etc/sponzey/tls/privkey.pem
+```
+
+### Reverse Proxy HTTPS
+
+Use this when Nginx, Caddy, a load balancer, or another proxy handles HTTPS.
+Sponzey can stay on loopback:
+
+```bash
 sponzey controller start \
   --host 127.0.0.1 \
   --port 7700 \
-  --data-dir .sponzey \
-  --external-url http://127.0.0.1:7700 \
-  --dev-insecure-loopback
+  --data-dir /var/lib/sponzey-fleet \
+  --external-url https://fleet.example.com
 ```
 
-Create the enrollment token on the controller laptop and copy only that token to the agent laptop:
+Your proxy should forward HTTPS traffic to `127.0.0.1:7700`.
+
+## SSH Tunnel Development
+
+SSH tunnel development uses the same setup flow. The only difference is that the
+agent reaches the controller through a local tunnel URL.
+
+On the agent machine, keep this running:
 
 ```bash
-sponzey enroll-token create --data-dir .sponzey --labels role=web,env=dev
+ssh -N -L 7700:127.0.0.1:7700 <user>@<controller-host>
 ```
 
-On the agent laptop, open the tunnel and keep it running:
-
-```bash
-ssh -N -L 7700:127.0.0.1:7700 <user>@<controller-laptop-hostname-or-ip>
-```
-
-In another terminal on the agent laptop, initialize and start the agent through the tunnel:
-
-```bash
-sponzey agent init \
-  --data-dir .sponzey \
-  --url http://127.0.0.1:7700 \
-  --token "<enrollment-token-from-controller-laptop>" \
-  --name laptop-02 \
-  --labels role=dev-laptop,env=dev
-
-sponzey agent start \
-  --data-dir .sponzey \
-  --dev-insecure-loopback
-```
-
-The tunnel must stay open while the agent is running. For production remote enrollment and agent traffic, use HTTPS/TLS rather than insecure HTTP.
-
-### 3. View The Agent In The Web Admin UI
-
-Open:
+Then use this URL on the agent machine:
 
 ```text
-http://127.0.0.1:7700/admin
+http://127.0.0.1:7700
 ```
 
-Paste the one-time admin token printed by `sponzey controller init`.
+If you use the controller machine's LAN IP with plain `http://`, Sponzey allows
+it but prints an insecure HTTP warning.
 
-The MVP Web Admin UI is intentionally lightweight. It is served by the controller and does not require a separate Node.js web server. Use it to inspect:
+## Local Scripts
 
-- enrolled agents and labels,
-- latest facts and metrics,
-- latest drift result,
-- command job creation with explicit high-risk confirmation,
-- job output,
-- recent jobs,
-- audit events.
+The scripts are shortcuts around the same single binary.
 
-### 4. Remove The Agent
+```bash
+./scripts/run_controller.sh --host 127.0.0.1 --port 7700 --data-dir .sponzey --external-url http://127.0.0.1:7700
+./scripts/run_agent.sh --data-dir .sponzey
+```
 
-Current MVP cleanup removes the local agent identity and configuration. Stop the agent process first, then remove the local agent directory:
+Important:
+
+- `run_controller.sh` wraps `sponzey controller start`.
+- `run_agent.sh` wraps `sponzey agent start`.
+- The scripts do not run `controller init`, `enroll-token create`, or `agent init`.
+- Do not run `scripts/run_agent.sh controller ...`; that script is agent-only.
+
+## Remove An Agent
+
+Stop the agent first.
+
+If you installed a systemd service:
+
+```bash
+sponzey agent uninstall-service --dry-run
+sudo sponzey agent uninstall-service
+```
+
+Then remove the local agent directory:
 
 ```bash
 rm -rf .sponzey/agent
 ```
 
-The controller-side inventory and audit records are intentionally retained for traceability. To use the same host again, create a new enrollment token and run `sponzey agent init` again.
-
-A production-ready delete or disable flow should be audited and controller-side, for example:
+For a production data directory:
 
 ```bash
-sponzey agents disable <agent-id>
-sponzey agents delete <agent-id> --confirm
+sudo rm -rf /var/lib/sponzey-fleet/agent
 ```
 
-Those audited controller-side delete commands are product direction, not the current MVP command surface.
+Controller inventory and audit records are kept. To use the same host again,
+create a new enrollment token and run `sponzey agent init` again.
 
-## One-Command Local Demo
-
-For a quick local product feel:
+To reset everything, remove the whole data directory:
 
 ```bash
-sponzey demo
+rm -rf .sponzey
 ```
 
-The demo starts a local controller, enrolls a local agent, runs a sample job, and prints the Web Admin URL.
+## Common Problems
 
-## Help
+### `controller is not initialized`
 
-Use command help to inspect the available surface:
+Run `controller init` once with the same data directory.
 
-```bash
-sponzey --help
-sponzey controller --help
-sponzey controller start --help
-sponzey agent --help
-sponzey agent init --help
-sponzey agent start --help
-```
+### `unable to open database file`
 
-The local wrapper scripts are role-specific:
+The controller data directory was probably not initialized. Run
+`sponzey controller init --data-dir ...` first.
 
-```bash
-./scripts/run_controller.sh --help
-./scripts/run_agent.sh --help
-```
+### `agent is not enrolled`
 
-## Safety Model
+Run `sponzey agent init ...` before `sponzey agent start ...`.
 
-Sponzey Fleet is a remote operations platform and can eventually run as root on managed hosts. The MVP therefore keeps strict boundaries:
+### `warning: insecure HTTP controller URL enabled`
 
-- agents connect outbound to the controller,
-- enrollment tokens are one-time registration inputs,
-- agents pin the controller signing fingerprint,
-- TLS certificate trust protects transport, while the controller signing fingerprint protects product identity,
-- replacing a TLS certificate is allowed when the pinned controller signing fingerprint stays the same,
-- changing the controller signing key requires explicit agent re-enrollment or a future audited rotation flow,
-- task envelopes are signed by the controller,
-- unsigned, expired, replayed, or target-mismatched tasks are rejected by the agent,
-- high-risk commands require explicit confirmation,
-- command output is stored separately from application logs,
-- secrets are redacted from logs and audit-oriented surfaces,
-- non-loopback insecure transport is rejected.
+This is not a crash. It means your controller URL starts with `http://`, so
+controller-agent traffic is not encrypted. HTTP is test-only. Product,
+customer, production, shared, or long-running environments must use HTTPS.
+HTTP transport provides no confidentiality or integrity guarantee.
 
-## Development Verification
+### Web Admin shows `{"error":"not_found"}`
 
-Run the local release gate before treating a change as ready:
+Open `/admin`, not an API path.
 
-```bash
-./scripts/release_readiness_gate.sh
-```
+### Which token goes where?
 
-Useful narrower checks:
+- Web Admin UI: use the admin token from `sponzey controller init`.
+- Agent init: use the enrollment token from `sponzey enroll-token create`.
+
+## Development Checks
 
 ```bash
 cargo fmt --all --check
 cargo test --workspace
 cargo clippy --workspace --all-targets
+npm test --workspace @sponzey/fleet
 npm test --workspace web-admin
 npm run build --workspace web-admin
 ./scripts/smoke_mvp.sh
 ```
-
-## Project Direction
-
-The current MVP is intentionally small. The next product steps are:
-
-- production TLS deployment,
-- audited agent disable/delete,
-- stronger service installation paths,
-- controller-side retention workers,
-- richer runbook execution,
-- production key rotation,
-- a generated API client for the Web Admin UI,
-- packaged releases through npm, standalone binaries, and OS packages.

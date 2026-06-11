@@ -8,7 +8,7 @@
 
 - [x] `sponzey controller init` 로컬 skeleton 구현
 - [x] controller dev key 파일 생성 skeleton 구현
-- [x] `sponzey controller start` loopback insecure guard 구현
+- [x] `sponzey controller start` HTTP warning/audit 구현
 - [x] `controller init`이 SQLite schema migration 실행
 - [x] 최소 REST API 서버와 health endpoint 구현
 - [x] admin bootstrap token 생성/저장/검증 구현

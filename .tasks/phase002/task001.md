@@ -29,8 +29,8 @@ agent init URL: https://fleet.example.com
 - [x] `ControllerSettings` 또는 동등 settings 구조에 `bind_host`, `bind_port`, `external_url`, `transport_mode`를 명시한다.
 - [x] CLI에 `sponzey controller start --external-url https://...`를 추가한다.
 - [x] `--host 0.0.0.0`과 `--external-url https://...` 조합을 허용한다.
-- [x] `--external-url http://...`는 loopback dev mode에서만 허용한다.
-- [x] `agent init --url http://...` non-loopback 거부를 유지한다.
+- [x] `--external-url http://...`는 허용하되 insecure HTTP 경고와 audit를 남긴다.
+- [x] `agent init --url http://...` non-loopback도 허용하되 경고를 출력한다.
 - [x] `agent init --url https://...`는 remote URL로 허용한다.
 - [x] URL parser를 ad hoc string split에서 typed parser로 정리한다.
 - [x] CLI help에 local dev, SSH tunnel dev, production HTTPS 예시를 분리한다.

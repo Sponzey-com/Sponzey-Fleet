@@ -26,12 +26,15 @@ The MVP repository also provides foreground scripts for local development:
 
 `run_agent.sh` does not auto-enroll the agent. Use the same `--data-dir` for controller init, token creation, agent enroll, and agent start:
 
+The HTTP example below is for local testing only. Product, customer,
+production, shared, or long-running environments must use HTTPS.
+
 ```bash
 ./target/debug/sponzey controller init --data-dir .sponzey
-./scripts/run_controller.sh --host 127.0.0.1 --port 7700 --data-dir .sponzey --dev-insecure-loopback
+./scripts/run_controller.sh --host 127.0.0.1 --port 7700 --data-dir .sponzey --external-url http://127.0.0.1:7700
 TOKEN=$(./target/debug/sponzey enroll-token create --data-dir .sponzey --labels role=web,env=dev)
 ./target/debug/sponzey agent enroll --data-dir .sponzey --url http://127.0.0.1:7700 --token "$TOKEN" --name web-01 --labels role=web,env=dev
-./scripts/run_agent.sh --data-dir .sponzey --dev-insecure-loopback
+./scripts/run_agent.sh --data-dir .sponzey
 ```
 
 ## Required Service Properties
@@ -81,7 +84,7 @@ Restart=on-failure
 WantedBy=multi-user.target
 ```
 
-Remote insecure transport must not be used in production. The loopback insecure flag is only for local development and demo flows.
+HTTP transport is test-only. Product, customer, production, shared, and long-running environments must use HTTPS.
 
 ## Manual Reboot Smoke
 

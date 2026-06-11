@@ -11,4 +11,4 @@ pub use identity::{
 };
 pub use logging::init_logging;
 pub use redaction::redact_secret;
-pub use settings::{LogProfile, Settings, SettingsError, TransportSecurityMode};
+pub use settings::{LogProfile, Settings, SettingsError};

@@ -42,9 +42,9 @@ This document captures the current MVP state and known limits.
 
 ## Demo Safety
 
-Local demo may use `--dev-insecure-loopback` with `127.0.0.1` only. Remote insecure transport is rejected and must not be recommended for public demos.
+HTTP controller URLs are allowed for setup checks, local development, lab tests, and short-lived validation only. Product, customer, production, shared, or long-running environments must use HTTPS.
 
-The demo emits a Product log marker and a Security audit event when loopback insecure mode is enabled.
+Every HTTP path prints an insecure transport warning because traffic is not encrypted. A controller configured with an HTTP external URL also writes a Security audit event. HTTP transport provides no confidentiality or integrity guarantee and can expose tokens, commands, operational data, and traffic to man-in-the-middle attacks.
 
 ## Verification
 

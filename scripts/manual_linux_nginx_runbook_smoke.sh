@@ -50,7 +50,8 @@ ADMIN_TOKEN="$(printf '%s\n' "$INIT_OUTPUT" | sed -n 's/^admin token: //p')"
   --host 127.0.0.1 \
   --port "$PORT" \
   --data-dir "$WORK_DIR" \
-  --dev-insecure-loopback > "$WORK_DIR/controller.log" 2>&1 &
+  --external-url "http://127.0.0.1:$PORT" \
+  > "$WORK_DIR/controller.log" 2>&1 &
 CONTROLLER_PID="$!"
 
 i=0
@@ -96,7 +97,7 @@ curl -fsS \
   --data-binary "@$REQUEST" \
   "http://127.0.0.1:$PORT/api/jobs/runbook" >/dev/null
 
-"$BIN" agent start --data-dir "$WORK_DIR" --dev-insecure-loopback --once
+"$BIN" agent start --data-dir "$WORK_DIR" --once
 
 if ! systemctl is-active nginx.service >/dev/null 2>&1; then
   echo "nginx.service is not active after runbook execution" >&2

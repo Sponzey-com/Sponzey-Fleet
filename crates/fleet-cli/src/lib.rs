@@ -89,8 +89,8 @@ pub enum ControllerSubcommand {
     },
     #[command(
         about = "Start the Sponzey Fleet controller",
-        long_about = "Start the Sponzey Fleet controller API, Web Admin UI, and agent gateway.\n\nThe bind host controls where the process listens. The external URL is the public URL agents and operators should use. Do not use 0.0.0.0 as an agent URL.",
-        after_help = "Examples:\n  Local loopback demo:\n    sponzey controller start --host 127.0.0.1 --port 7700 --data-dir .sponzey --dev-insecure-loopback --external-url http://127.0.0.1:7700\n\n  SSH tunnel development:\n    sponzey controller start --host 127.0.0.1 --port 7700 --data-dir .sponzey --dev-insecure-loopback --external-url http://127.0.0.1:7700\n\n  Production HTTPS behind DNS/reverse proxy:\n    sponzey controller start --host 127.0.0.1 --port 7700 --data-dir /var/lib/sponzey-fleet --external-url https://fleet.example.com\n\n  Built-in HTTPS listener:\n    sponzey controller start --host 0.0.0.0 --port 7700 --data-dir /var/lib/sponzey-fleet --external-url https://fleet.example.com --tls-cert /etc/sponzey/tls/fullchain.pem --tls-key /etc/sponzey/tls/privkey.pem"
+        long_about = "Start the Sponzey Fleet controller API, Web Admin UI, and agent gateway.\n\nThe bind host controls where the process listens. The external URL is the public URL agents and operators should use. Do not use 0.0.0.0 as an agent URL. HTTP URLs are allowed for tests only, but every HTTP use prints a warning because traffic is not encrypted. Product and production environments must use HTTPS.",
+        after_help = "Examples:\n  Local loopback demo:\n    sponzey controller start --host 127.0.0.1 --port 7700 --data-dir .sponzey --external-url http://127.0.0.1:7700\n\n  Test-only HTTP remote controller with warning:\n    sponzey controller start --host 0.0.0.0 --port 7700 --data-dir /var/lib/sponzey-fleet --external-url http://192.168.0.10:7700\n\n  HTTPS behind DNS/reverse proxy:\n    sponzey controller start --host 127.0.0.1 --port 7700 --data-dir /var/lib/sponzey-fleet --external-url https://fleet.example.com\n\n  Built-in HTTPS listener:\n    sponzey controller start --host 0.0.0.0 --port 7700 --data-dir /var/lib/sponzey-fleet --external-url https://fleet.example.com --tls-cert /etc/sponzey/tls/fullchain.pem --tls-key /etc/sponzey/tls/privkey.pem"
     )]
     Start {
         #[arg(long, default_value = "127.0.0.1")]
@@ -99,7 +99,7 @@ pub enum ControllerSubcommand {
         port: u16,
         #[arg(
             long,
-            help = "Public controller URL agents use; production URLs must be HTTPS"
+            help = "Public controller URL agents use; http:// is test-only and prints warnings"
         )]
         external_url: Option<String>,
         #[arg(
@@ -111,11 +111,6 @@ pub enum ControllerSubcommand {
         tls_cert: Option<PathBuf>,
         #[arg(long, help = "PEM private key for built-in HTTPS listener")]
         tls_key: Option<PathBuf>,
-        #[arg(
-            long,
-            help = "Allow insecure HTTP only for 127.0.0.1/localhost development"
-        )]
-        dev_insecure_loopback: bool,
         #[arg(long, default_value = ".sponzey")]
         data_dir: PathBuf,
     },
@@ -154,7 +149,7 @@ pub enum AgentSubcommand {
         about = "Enroll this host as an agent",
         long_about = "Enroll this host with a controller using a one-time enrollment token.\n\nEnrollment writes the local agent identity, private key, labels, and pinned controller fingerprint under the selected data directory. Run this once before starting the agent.",
         visible_alias = "enroll",
-        after_help = "Examples:\n  Local loopback development:\n    sponzey agent init --url http://127.0.0.1:7700 --token <token> --name web-01 --labels role=web,env=dev\n\n  Production HTTPS:\n    sponzey agent init --data-dir /var/lib/sponzey-fleet --url https://fleet.example.com --token <token> --name prod-web-01 --labels role=web,env=prod\n\n  HTTPS with a private CA:\n    sponzey agent init --data-dir /var/lib/sponzey-fleet --url https://fleet.example.com --tls-ca-cert /etc/sponzey/tls/ca.pem --token <token> --name prod-web-01"
+        after_help = "Examples:\n  Local loopback development:\n    sponzey agent init --url http://127.0.0.1:7700 --token <token> --name web-01 --labels role=web,env=dev\n\n  Test-only remote HTTP with warning:\n    sponzey agent init --data-dir /var/lib/sponzey-fleet --url http://192.168.0.10:7700 --token <token> --name test-web-01 --labels role=web,env=test\n\n  HTTPS:\n    sponzey agent init --data-dir /var/lib/sponzey-fleet --url https://fleet.example.com --token <token> --name prod-web-01 --labels role=web,env=prod\n\n  HTTPS with a private CA:\n    sponzey agent init --data-dir /var/lib/sponzey-fleet --url https://fleet.example.com --tls-ca-cert /etc/sponzey/tls/ca.pem --token <token> --name prod-web-01"
     )]
     Init {
         #[arg(long, help = "Controller URL to enroll against")]
@@ -180,14 +175,9 @@ pub enum AgentSubcommand {
     #[command(
         about = "Start the enrolled local agent",
         long_about = "Start the enrolled local agent heartbeat and task loop.\n\nThe agent reads its local identity from <data-dir>/agent/agent.conf, verifies the pinned controller fingerprint, sends facts and metrics during heartbeat, and receives controller-signed tasks. The agent must be enrolled before this command can run.",
-        after_help = "Examples:\n  sponzey agent start --data-dir .sponzey --dev-insecure-loopback\n  sponzey agent start --data-dir /var/lib/sponzey-fleet\n  sponzey agent start --data-dir .sponzey --once\n\nLocal development flow:\n  sponzey controller init --data-dir .sponzey\n  sponzey enroll-token create --data-dir .sponzey --labels role=web,env=dev\n  sponzey agent init --data-dir .sponzey --url http://127.0.0.1:7700 --token <token> --name web-01 --labels role=web,env=dev\n  sponzey agent start --data-dir .sponzey --dev-insecure-loopback"
+        after_help = "Examples:\n  sponzey agent start --data-dir .sponzey\n  sponzey agent start --data-dir /var/lib/sponzey-fleet\n  sponzey agent start --data-dir .sponzey --once\n\nLocal development flow:\n  sponzey controller init --data-dir .sponzey\n  sponzey enroll-token create --data-dir .sponzey --labels role=web,env=dev\n  sponzey agent init --data-dir .sponzey --url http://127.0.0.1:7700 --token <token> --name web-01 --labels role=web,env=dev\n  sponzey agent start --data-dir .sponzey"
     )]
     Start {
-        #[arg(
-            long,
-            help = "Allow insecure HTTP/WebSocket transport only for loopback development"
-        )]
-        dev_insecure_loopback: bool,
         #[arg(
             long,
             default_value = ".sponzey",
@@ -406,7 +396,7 @@ impl Display for CliError {
             Self::ControllerNotInitialized { data_dir } => {
                 write!(
                     formatter,
-                    "controller is not initialized for data dir: {}\n\nInitialize it once before starting the controller:\n\n  sponzey controller init --data-dir \"{}\"\n  sponzey controller start --host 127.0.0.1 --port 7700 --data-dir \"{}\" --external-url http://127.0.0.1:7700 --dev-insecure-loopback\n\nIf you use local scripts:\n\n  ./scripts/run_controller.sh --host 127.0.0.1 --port 7700 --data-dir \"{}\" --external-url http://127.0.0.1:7700 --dev-insecure-loopback",
+                    "controller is not initialized for data dir: {}\n\nInitialize it once before starting the controller:\n\n  sponzey controller init --data-dir \"{}\"\n  sponzey controller start --host 127.0.0.1 --port 7700 --data-dir \"{}\" --external-url http://127.0.0.1:7700\n\nIf you use local scripts:\n\n  ./scripts/run_controller.sh --host 127.0.0.1 --port 7700 --data-dir \"{}\" --external-url http://127.0.0.1:7700",
                     data_dir.display(),
                     data_dir.display(),
                     data_dir.display(),
@@ -526,7 +516,6 @@ fn execute_controller(command: ControllerCommand) -> Result<(), CliError> {
             db,
             tls_cert,
             tls_key,
-            dev_insecure_loopback,
             data_dir,
         } => {
             let database_path = db.as_deref().map(parse_sqlite_database_url).transpose()?;
@@ -539,7 +528,6 @@ fn execute_controller(command: ControllerCommand) -> Result<(), CliError> {
                 tls_key_path: tls_key,
                 data_dir,
                 database_path,
-                dev_insecure_loopback,
             })?;
             Ok(())
         }
@@ -678,6 +666,7 @@ fn execute_agent(command: AgentCommand) -> Result<(), CliError> {
             tls_ca_cert,
             data_dir,
         } => {
+            warn_if_insecure_http_url(&url);
             fs::create_dir_all(agent_dir(&data_dir))?;
             let agent_id = format!("agent-{name}");
             let key_pair = fleet_core::generate_agent_key_pair()?;
@@ -731,7 +720,6 @@ fn execute_agent(command: AgentCommand) -> Result<(), CliError> {
             Ok(())
         }
         AgentSubcommand::Start {
-            dev_insecure_loopback,
             data_dir,
             once,
             heartbeat_interval_seconds,
@@ -744,10 +732,8 @@ fn execute_agent(command: AgentCommand) -> Result<(), CliError> {
                     "agent is not enrolled",
                 )));
             }
-            if dev_insecure_loopback {
-                println!("warning: dev insecure loopback mode enabled");
-            }
             let config = read_agent_config(&path)?;
+            warn_if_insecure_http_url(&config.url);
             validate_pinned_controller(&config)?;
             run_agent_heartbeat_loop(
                 &config,
@@ -1266,7 +1252,6 @@ fn execute_demo(command: DemoCommand) -> Result<(), CliError> {
                 tls_key_path: None,
                 data_dir: server_data_dir,
                 database_path: None,
-                dev_insecure_loopback: true,
             },
             move || thread_shutdown.load(Ordering::SeqCst),
         )
@@ -1295,7 +1280,9 @@ fn execute_demo(command: DemoCommand) -> Result<(), CliError> {
     println!("demo controller: {controller_url}");
     println!("demo admin: {controller_url}/admin");
     println!("demo controller fingerprint: {controller_fingerprint}");
-    println!("demo mode: dev-insecure-loopback");
+    eprintln!(
+        "warning: demo uses insecure HTTP controller URL: {controller_url}; HTTP is test-only and not encrypted; use HTTPS for product or production environments"
+    );
     if command.keep_temp {
         println!("demo data dir: {}", data_dir.display());
     }
@@ -1445,6 +1432,7 @@ fn http_request_url(
     body: Option<&str>,
 ) -> Result<String, CliError> {
     let endpoint = parse_controller_url(url)?;
+    warn_if_insecure_http_endpoint(&endpoint);
     let body = body.unwrap_or_default();
     let method = reqwest::Method::from_bytes(method.as_bytes())
         .map_err(|error| CliError::Http(error.to_string()))?;
@@ -2045,7 +2033,7 @@ fn parse_controller_url(url: &str) -> Result<ControllerEndpoint, CliError> {
         (ControllerUrlScheme::Https, rest)
     } else {
         return Err(CliError::Http(
-            "controller URL must start with https://, except loopback dev http://".to_owned(),
+            "controller URL must start with http:// or https://".to_owned(),
         ));
     };
 
@@ -2056,9 +2044,9 @@ fn parse_controller_url(url: &str) -> Result<ControllerEndpoint, CliError> {
         ));
     }
     let (host, port) = parse_controller_authority(authority, scheme)?;
-    if scheme == ControllerUrlScheme::Http && !is_loopback_host(&host) {
+    if is_wildcard_host(&host) {
         return Err(CliError::Http(
-            "insecure http controller URL is only allowed for loopback hosts".to_owned(),
+            "controller URL must not use a wildcard host such as 0.0.0.0".to_owned(),
         ));
     }
     Ok(ControllerEndpoint { scheme, host, port })
@@ -2115,8 +2103,23 @@ fn default_controller_port(scheme: ControllerUrlScheme) -> u16 {
     }
 }
 
-fn is_loopback_host(host: &str) -> bool {
-    matches!(host, "127.0.0.1" | "localhost" | "::1")
+fn is_wildcard_host(host: &str) -> bool {
+    matches!(host, "0.0.0.0" | "::")
+}
+
+fn warn_if_insecure_http_url(url: &str) {
+    if let Ok(endpoint) = parse_controller_url(url) {
+        warn_if_insecure_http_endpoint(&endpoint);
+    }
+}
+
+fn warn_if_insecure_http_endpoint(endpoint: &ControllerEndpoint) {
+    if endpoint.scheme == ControllerUrlScheme::Http {
+        eprintln!(
+            "warning: insecure HTTP controller URL enabled: {}; HTTP is test-only and not encrypted; use HTTPS for product or production environments",
+            endpoint.api_url("").trim_end_matches('/')
+        );
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -4002,11 +4005,20 @@ postgresql.service loaded failed failed PostgreSQL database server
     }
 
     #[test]
-    fn rejects_non_loopback_insecure_controller_url() {
-        assert!(matches!(
-            parse_controller_url("http://10.0.0.5:7700"),
-            Err(CliError::Http(_))
-        ));
+    fn parses_http_controller_url_for_remote_agent_with_warning_policy() {
+        let endpoint = parse_controller_url("http://10.0.0.5:7700").unwrap();
+
+        assert_eq!(endpoint.scheme, ControllerUrlScheme::Http);
+        assert_eq!(endpoint.host, "10.0.0.5");
+        assert_eq!(endpoint.port, 7700);
+        assert_eq!(
+            endpoint.api_url("/api/controller/identity"),
+            "http://10.0.0.5:7700/api/controller/identity"
+        );
+        assert_eq!(
+            endpoint.websocket_url("/api/agents/ws"),
+            "ws://10.0.0.5:7700/api/agents/ws"
+        );
     }
 
     #[test]

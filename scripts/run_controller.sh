@@ -10,7 +10,7 @@ if [ ! -x "$BIN" ]; then
 fi
 
 if [ "$#" -eq 0 ]; then
-  set -- --host 127.0.0.1 --port 7700 --data-dir .sponzey --external-url http://127.0.0.1:7700 --dev-insecure-loopback
+  set -- --host 127.0.0.1 --port 7700 --data-dir .sponzey --external-url http://127.0.0.1:7700
 fi
 
 case "${1:-}" in
@@ -91,12 +91,12 @@ Initialize it once before starting the controller:
 
 Then start the controller:
 
-  ./scripts/run_controller.sh --host 127.0.0.1 --port 7700 --data-dir "$DATA_DIR" --external-url http://127.0.0.1:7700 --dev-insecure-loopback
+  ./scripts/run_controller.sh --host 127.0.0.1 --port 7700 --data-dir "$DATA_DIR" --external-url http://127.0.0.1:7700
 
 Equivalent explicit script form:
 
   ./scripts/run_controller.sh controller init --data-dir "$DATA_DIR"
-  ./scripts/run_controller.sh controller start --host 127.0.0.1 --port 7700 --data-dir "$DATA_DIR" --external-url http://127.0.0.1:7700 --dev-insecure-loopback
+  ./scripts/run_controller.sh controller start --host 127.0.0.1 --port 7700 --data-dir "$DATA_DIR" --external-url http://127.0.0.1:7700
 EOF
   exit 2
 fi

@@ -10,7 +10,7 @@ if [ ! -x "$BIN" ]; then
 fi
 
 if [ "$#" -eq 0 ]; then
-  set -- --data-dir .sponzey --dev-insecure-loopback
+  set -- --data-dir .sponzey
 fi
 
 case "${1:-}" in
@@ -75,10 +75,10 @@ error: agent is not enrolled for data dir: $DATA_DIR
 Start a controller, create an enrollment token, then enroll the agent with the same data dir:
 
   "$BIN" controller init --data-dir "$DATA_DIR"
-  ./scripts/run_controller.sh --host 127.0.0.1 --port 7700 --data-dir "$DATA_DIR" --dev-insecure-loopback
+  ./scripts/run_controller.sh --host 127.0.0.1 --port 7700 --data-dir "$DATA_DIR" --external-url http://127.0.0.1:7700
   TOKEN=\$("$BIN" enroll-token create --data-dir "$DATA_DIR" --labels role=web,env=dev)
   "$BIN" agent init --data-dir "$DATA_DIR" --url http://127.0.0.1:7700 --token "\$TOKEN" --name web-01 --labels role=web,env=dev
-  ./scripts/run_agent.sh --data-dir "$DATA_DIR" --dev-insecure-loopback
+  ./scripts/run_agent.sh --data-dir "$DATA_DIR"
 
 For a one-command local demo, run:
 
