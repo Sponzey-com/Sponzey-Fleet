@@ -3,11 +3,13 @@ use fleet_application::{
     AgentRepository, ApprovalDecisionRecord as AppApprovalDecisionRecord, ApprovalRepository,
     AuditRepository, AuditWriter, CommandJobRepository, ControllerIdentityMetadata,
     ControllerIdentityRepository, DriftCheckJobRepository,
-    DriftReportRecord as AppDriftReportRecord, DriftRepository,
-    EnrollmentTokenRecord as AppEnrollmentTokenRecord, EnrollmentTokenRepository, FactsRepository,
+    DriftReportPageRecord as AppDriftReportPageRecord, DriftReportRecord as AppDriftReportRecord,
+    DriftRepository, EnrollmentTokenRecord as AppEnrollmentTokenRecord, EnrollmentTokenRepository,
+    FactsRepository, FactsSnapshotPageRecord as AppFactsSnapshotPageRecord,
     FactsSnapshotRecord as AppFactsSnapshotRecord, JobOutputChunk, JobOutputRepository,
     JobOutputStream, JobQueryRepository, JobRepository, JobSummaryRecord as AppJobSummaryRecord,
-    MetricsRepository, MetricsSnapshotRecord as AppMetricsSnapshotRecord, RunbookJobRepository,
+    MetricsRepository, MetricsSnapshotPageRecord as AppMetricsSnapshotPageRecord,
+    MetricsSnapshotRecord as AppMetricsSnapshotRecord, RunbookJobRepository, SnapshotPageCursor,
     TaskAssignmentRepository,
 };
 use fleet_domain::{
@@ -139,6 +141,14 @@ pub struct FactsSnapshotRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FactsSnapshotPageRecord {
+    pub agent_id: String,
+    pub body: String,
+    pub collected_at: SystemTime,
+    pub cursor: SnapshotPageCursor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetricsSnapshotRecord {
     pub agent_id: String,
     pub body: String,
@@ -146,10 +156,26 @@ pub struct MetricsSnapshotRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetricsSnapshotPageRecord {
+    pub agent_id: String,
+    pub body: String,
+    pub collected_at: SystemTime,
+    pub cursor: SnapshotPageCursor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DriftReportRecord {
     pub agent_id: String,
     pub report: DriftReport,
     pub checked_at: SystemTime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DriftReportPageRecord {
+    pub agent_id: String,
+    pub report: DriftReport,
+    pub checked_at: SystemTime,
+    pub cursor: SnapshotPageCursor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -425,6 +451,45 @@ impl SqliteStore {
             .map_err(StoreError::from)
     }
 
+    pub fn list_facts_snapshots(
+        &self,
+        agent_id: &str,
+        limit: usize,
+        before: Option<SnapshotPageCursor>,
+    ) -> Result<Vec<FactsSnapshotPageRecord>, StoreError> {
+        let limit = limit.clamp(1, 501) as i64;
+        if let Some(before) = before {
+            let before_secs = system_time_to_unix_secs(before.occurred_at);
+            let mut statement = self.connection.prepare(
+                "SELECT id, agent_id, body, collected_at
+                 FROM facts_snapshots
+                 WHERE agent_id = ?1
+                   AND (collected_at < ?2 OR (collected_at = ?2 AND id < ?3))
+                 ORDER BY collected_at DESC, id DESC
+                 LIMIT ?4",
+            )?;
+            return statement
+                .query_map(
+                    params![agent_id, before_secs, before.row_id, limit],
+                    row_to_facts_snapshot_page_record,
+                )?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(StoreError::from);
+        }
+
+        let mut statement = self.connection.prepare(
+            "SELECT id, agent_id, body, collected_at
+             FROM facts_snapshots
+             WHERE agent_id = ?1
+             ORDER BY collected_at DESC, id DESC
+             LIMIT ?2",
+        )?;
+        statement
+            .query_map(params![agent_id, limit], row_to_facts_snapshot_page_record)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
     pub fn insert_metrics_snapshot(
         &self,
         agent_id: &str,
@@ -460,6 +525,48 @@ impl SqliteStore {
                 },
             )
             .optional()
+            .map_err(StoreError::from)
+    }
+
+    pub fn list_metrics_snapshots(
+        &self,
+        agent_id: &str,
+        limit: usize,
+        before: Option<SnapshotPageCursor>,
+    ) -> Result<Vec<MetricsSnapshotPageRecord>, StoreError> {
+        let limit = limit.clamp(1, 501) as i64;
+        if let Some(before) = before {
+            let before_secs = system_time_to_unix_secs(before.occurred_at);
+            let mut statement = self.connection.prepare(
+                "SELECT id, agent_id, body, collected_at
+                 FROM metrics_snapshots
+                 WHERE agent_id = ?1
+                   AND (collected_at < ?2 OR (collected_at = ?2 AND id < ?3))
+                 ORDER BY collected_at DESC, id DESC
+                 LIMIT ?4",
+            )?;
+            return statement
+                .query_map(
+                    params![agent_id, before_secs, before.row_id, limit],
+                    row_to_metrics_snapshot_page_record,
+                )?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(StoreError::from);
+        }
+
+        let mut statement = self.connection.prepare(
+            "SELECT id, agent_id, body, collected_at
+             FROM metrics_snapshots
+             WHERE agent_id = ?1
+             ORDER BY collected_at DESC, id DESC
+             LIMIT ?2",
+        )?;
+        statement
+            .query_map(
+                params![agent_id, limit],
+                row_to_metrics_snapshot_page_record,
+            )?
+            .collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
     }
 
@@ -510,6 +617,45 @@ impl SqliteStore {
                 },
             )
             .optional()
+            .map_err(StoreError::from)
+    }
+
+    pub fn list_drift_reports(
+        &self,
+        agent_id: &str,
+        limit: usize,
+        before: Option<SnapshotPageCursor>,
+    ) -> Result<Vec<DriftReportPageRecord>, StoreError> {
+        let limit = limit.clamp(1, 501) as i64;
+        if let Some(before) = before {
+            let before_secs = system_time_to_unix_secs(before.occurred_at);
+            let mut statement = self.connection.prepare(
+                "SELECT id, agent_id, policy_name, status, expected, actual, checked_at
+                 FROM drift_reports
+                 WHERE agent_id = ?1
+                   AND (checked_at < ?2 OR (checked_at = ?2 AND id < ?3))
+                 ORDER BY checked_at DESC, id DESC
+                 LIMIT ?4",
+            )?;
+            return statement
+                .query_map(
+                    params![agent_id, before_secs, before.row_id, limit],
+                    row_to_drift_report_page_record,
+                )?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(StoreError::from);
+        }
+
+        let mut statement = self.connection.prepare(
+            "SELECT id, agent_id, policy_name, status, expected, actual, checked_at
+             FROM drift_reports
+             WHERE agent_id = ?1
+             ORDER BY checked_at DESC, id DESC
+             LIMIT ?2",
+        )?;
+        statement
+            .query_map(params![agent_id, limit], row_to_drift_report_page_record)?
+            .collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
     }
 
@@ -1616,6 +1762,25 @@ impl FactsRepository for SqliteStore {
             }),
         )
     }
+
+    fn list_facts_snapshots(
+        &self,
+        agent_id: &str,
+        limit: usize,
+        before: Option<SnapshotPageCursor>,
+    ) -> Result<Vec<AppFactsSnapshotPageRecord>, Self::Error> {
+        Ok(
+            SqliteStore::list_facts_snapshots(self, agent_id, limit, before)?
+                .into_iter()
+                .map(|record| AppFactsSnapshotPageRecord {
+                    agent_id: record.agent_id,
+                    body: record.body,
+                    collected_at: record.collected_at,
+                    cursor: record.cursor,
+                })
+                .collect(),
+        )
+    }
 }
 
 impl MetricsRepository for SqliteStore {
@@ -1644,6 +1809,25 @@ impl MetricsRepository for SqliteStore {
             }),
         )
     }
+
+    fn list_metrics_snapshots(
+        &self,
+        agent_id: &str,
+        limit: usize,
+        before: Option<SnapshotPageCursor>,
+    ) -> Result<Vec<AppMetricsSnapshotPageRecord>, Self::Error> {
+        Ok(
+            SqliteStore::list_metrics_snapshots(self, agent_id, limit, before)?
+                .into_iter()
+                .map(|record| AppMetricsSnapshotPageRecord {
+                    agent_id: record.agent_id,
+                    body: record.body,
+                    collected_at: record.collected_at,
+                    cursor: record.cursor,
+                })
+                .collect(),
+        )
+    }
 }
 
 impl DriftRepository for SqliteStore {
@@ -1670,6 +1854,78 @@ impl DriftRepository for SqliteStore {
             }),
         )
     }
+
+    fn list_drift_reports(
+        &self,
+        agent_id: &str,
+        limit: usize,
+        before: Option<SnapshotPageCursor>,
+    ) -> Result<Vec<AppDriftReportPageRecord>, Self::Error> {
+        Ok(
+            SqliteStore::list_drift_reports(self, agent_id, limit, before)?
+                .into_iter()
+                .map(|record| AppDriftReportPageRecord {
+                    agent_id: record.agent_id,
+                    report: record.report,
+                    checked_at: record.checked_at,
+                    cursor: record.cursor,
+                })
+                .collect(),
+        )
+    }
+}
+
+fn row_to_facts_snapshot_page_record(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<FactsSnapshotPageRecord> {
+    let id = row.get(0)?;
+    let collected_at = unix_secs_to_system_time(row.get(3)?);
+    Ok(FactsSnapshotPageRecord {
+        agent_id: row.get(1)?,
+        body: row.get(2)?,
+        collected_at,
+        cursor: SnapshotPageCursor {
+            occurred_at: collected_at,
+            row_id: id,
+        },
+    })
+}
+
+fn row_to_metrics_snapshot_page_record(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<MetricsSnapshotPageRecord> {
+    let id = row.get(0)?;
+    let collected_at = unix_secs_to_system_time(row.get(3)?);
+    Ok(MetricsSnapshotPageRecord {
+        agent_id: row.get(1)?,
+        body: row.get(2)?,
+        collected_at,
+        cursor: SnapshotPageCursor {
+            occurred_at: collected_at,
+            row_id: id,
+        },
+    })
+}
+
+fn row_to_drift_report_page_record(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<DriftReportPageRecord> {
+    let id = row.get(0)?;
+    let checked_at = unix_secs_to_system_time(row.get(6)?);
+    Ok(DriftReportPageRecord {
+        agent_id: row.get(1)?,
+        report: DriftReport {
+            policy_name: row.get(2)?,
+            status: parse_drift_status(&row.get::<_, String>(3)?),
+            expected: row.get(4)?,
+            actual: row.get(5)?,
+        },
+        checked_at,
+        cursor: SnapshotPageCursor {
+            occurred_at: checked_at,
+            row_id: id,
+        },
+    })
 }
 
 fn row_to_audit(row: &rusqlite::Row<'_>) -> Result<AuditEvent, StoreError> {
@@ -2295,6 +2551,32 @@ mod tests {
     }
 
     #[test]
+    fn pages_facts_snapshots_with_stable_cursor() {
+        let store = SqliteStore::in_memory().unwrap();
+        store.save_agent(agent()).unwrap();
+        for body in ["{\"seq\":1}", "{\"seq\":2}", "{\"seq\":3}"] {
+            store
+                .insert_facts_snapshot("a1", body, SystemTime::UNIX_EPOCH + Duration::from_secs(1))
+                .unwrap();
+        }
+
+        let first_page = store.list_facts_snapshots("a1", 2, None).unwrap();
+        assert_eq!(
+            first_page
+                .iter()
+                .map(|record| record.body.as_str())
+                .collect::<Vec<_>>(),
+            vec!["{\"seq\":3}", "{\"seq\":2}"]
+        );
+
+        let second_page = store
+            .list_facts_snapshots("a1", 2, Some(first_page[1].cursor))
+            .unwrap();
+        assert_eq!(second_page.len(), 1);
+        assert_eq!(second_page[0].body, "{\"seq\":1}");
+    }
+
+    #[test]
     fn stores_latest_metrics_snapshot() {
         let store = SqliteStore::in_memory().unwrap();
         store.save_agent(agent()).unwrap();
@@ -2317,6 +2599,43 @@ mod tests {
 
         assert_eq!(snapshot.agent_id, "a1");
         assert_eq!(snapshot.body, "{\"cpu\":{\"logical_count\":4}}");
+    }
+
+    #[test]
+    fn pages_metrics_snapshots_before_cursor() {
+        let store = SqliteStore::in_memory().unwrap();
+        store.save_agent(agent()).unwrap();
+        for (seconds, body) in [
+            (1, "{\"cpu\":{\"logical_count\":1}}"),
+            (2, "{\"cpu\":{\"logical_count\":2}}"),
+            (3, "{\"cpu\":{\"logical_count\":3}}"),
+        ] {
+            store
+                .insert_metrics_snapshot(
+                    "a1",
+                    body,
+                    SystemTime::UNIX_EPOCH + Duration::from_secs(seconds),
+                )
+                .unwrap();
+        }
+
+        let first_page = store.list_metrics_snapshots("a1", 2, None).unwrap();
+        assert_eq!(
+            first_page
+                .iter()
+                .map(|record| record.body.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "{\"cpu\":{\"logical_count\":3}}",
+                "{\"cpu\":{\"logical_count\":2}}"
+            ]
+        );
+
+        let second_page = store
+            .list_metrics_snapshots("a1", 2, Some(first_page[1].cursor))
+            .unwrap();
+        assert_eq!(second_page.len(), 1);
+        assert_eq!(second_page[0].body, "{\"cpu\":{\"logical_count\":1}}");
     }
 
     #[test]
@@ -2353,6 +2672,45 @@ mod tests {
         assert_eq!(record.agent_id, "a1");
         assert_eq!(record.report.status, DriftStatus::Drifted);
         assert_eq!(record.report.actual, "stopped");
+    }
+
+    #[test]
+    fn pages_drift_reports_before_cursor() {
+        let store = SqliteStore::in_memory().unwrap();
+        store.save_agent(agent()).unwrap();
+        for (seconds, status, actual) in [
+            (1, DriftStatus::Unknown, "unknown"),
+            (2, DriftStatus::Compliant, "running"),
+            (3, DriftStatus::Drifted, "stopped"),
+        ] {
+            store
+                .insert_drift_report(
+                    "a1",
+                    &DriftReport {
+                        policy_name: "nginx-running".to_owned(),
+                        status,
+                        expected: "service nginx running".to_owned(),
+                        actual: actual.to_owned(),
+                    },
+                    SystemTime::UNIX_EPOCH + Duration::from_secs(seconds),
+                )
+                .unwrap();
+        }
+
+        let first_page = store.list_drift_reports("a1", 2, None).unwrap();
+        assert_eq!(
+            first_page
+                .iter()
+                .map(|record| record.report.actual.as_str())
+                .collect::<Vec<_>>(),
+            vec!["stopped", "running"]
+        );
+
+        let second_page = store
+            .list_drift_reports("a1", 2, Some(first_page[1].cursor))
+            .unwrap();
+        assert_eq!(second_page.len(), 1);
+        assert_eq!(second_page[0].report.actual, "unknown");
     }
 
     #[test]

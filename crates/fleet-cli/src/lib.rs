@@ -2393,6 +2393,7 @@ fn send_metrics_snapshot(
 }
 
 fn collect_local_facts() -> serde_json::Value {
+    let system_time_ms = epoch_millis() as u64;
     let meminfo = read_optional_trimmed("/proc/meminfo");
     let network_body = read_optional_trimmed("/proc/net/dev");
     let network_interfaces = network_body
@@ -2412,6 +2413,7 @@ fn collect_local_facts() -> serde_json::Value {
     }
 
     serde_json::json!({
+        "system_time_ms": system_time_ms,
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "family": std::env::consts::FAMILY,
@@ -2451,11 +2453,13 @@ fn collect_local_facts() -> serde_json::Value {
 }
 
 fn collect_local_metrics() -> serde_json::Value {
+    let system_time_ms = epoch_millis() as u64;
     let meminfo = read_optional_trimmed("/proc/meminfo");
     let disk_usage = collect_root_disk_usage();
     let service_summary = collect_systemd_service_summary();
 
     serde_json::json!({
+        "system_time_ms": system_time_ms,
         "cpu": {
             "logical_count": std::thread::available_parallelism()
                 .map(|value| value.get())
@@ -3661,6 +3665,12 @@ postgresql.service loaded failed failed PostgreSQL database server
         assert!(facts.get("os").is_some());
         assert!(
             facts
+                .get("system_time_ms")
+                .and_then(serde_json::Value::as_u64)
+                .is_some()
+        );
+        assert!(
+            facts
                 .get("cpu")
                 .and_then(|value| value.get("logical_count"))
                 .is_some()
@@ -3687,6 +3697,12 @@ postgresql.service loaded failed failed PostgreSQL database server
     fn collect_local_metrics_is_structured_and_secret_free() {
         let metrics = collect_local_metrics();
 
+        assert!(
+            metrics
+                .get("system_time_ms")
+                .and_then(serde_json::Value::as_u64)
+                .is_some()
+        );
         assert!(
             metrics
                 .get("cpu")

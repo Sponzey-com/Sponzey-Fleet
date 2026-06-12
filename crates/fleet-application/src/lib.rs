@@ -211,11 +211,25 @@ pub trait JobQueryRepository {
     fn list_job_summaries(&self, limit: usize) -> Result<Vec<JobSummaryRecord>, Self::Error>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnapshotPageCursor {
+    pub occurred_at: SystemTime,
+    pub row_id: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactsSnapshotRecord {
     pub agent_id: String,
     pub body: String,
     pub collected_at: SystemTime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FactsSnapshotPageRecord {
+    pub agent_id: String,
+    pub body: String,
+    pub collected_at: SystemTime,
+    pub cursor: SnapshotPageCursor,
 }
 
 pub trait FactsRepository {
@@ -231,6 +245,12 @@ pub trait FactsRepository {
         &self,
         agent_id: &str,
     ) -> Result<Option<FactsSnapshotRecord>, Self::Error>;
+    fn list_facts_snapshots(
+        &self,
+        agent_id: &str,
+        limit: usize,
+        before: Option<SnapshotPageCursor>,
+    ) -> Result<Vec<FactsSnapshotPageRecord>, Self::Error>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,6 +258,14 @@ pub struct MetricsSnapshotRecord {
     pub agent_id: String,
     pub body: String,
     pub collected_at: SystemTime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetricsSnapshotPageRecord {
+    pub agent_id: String,
+    pub body: String,
+    pub collected_at: SystemTime,
+    pub cursor: SnapshotPageCursor,
 }
 
 pub trait MetricsRepository {
@@ -253,6 +281,12 @@ pub trait MetricsRepository {
         &self,
         agent_id: &str,
     ) -> Result<Option<MetricsSnapshotRecord>, Self::Error>;
+    fn list_metrics_snapshots(
+        &self,
+        agent_id: &str,
+        limit: usize,
+        before: Option<SnapshotPageCursor>,
+    ) -> Result<Vec<MetricsSnapshotPageRecord>, Self::Error>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -260,6 +294,14 @@ pub struct DriftReportRecord {
     pub agent_id: String,
     pub report: DriftReport,
     pub checked_at: SystemTime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DriftReportPageRecord {
+    pub agent_id: String,
+    pub report: DriftReport,
+    pub checked_at: SystemTime,
+    pub cursor: SnapshotPageCursor,
 }
 
 pub trait DriftRepository {
@@ -273,6 +315,12 @@ pub trait DriftRepository {
     ) -> Result<(), Self::Error>;
     fn latest_drift_report(&self, agent_id: &str)
     -> Result<Option<DriftReportRecord>, Self::Error>;
+    fn list_drift_reports(
+        &self,
+        agent_id: &str,
+        limit: usize,
+        before: Option<SnapshotPageCursor>,
+    ) -> Result<Vec<DriftReportPageRecord>, Self::Error>;
 }
 
 pub trait TaskEnvelopeSigner {
@@ -1177,6 +1225,22 @@ impl GetLatestFacts {
     }
 }
 
+pub struct ListFactsSnapshots;
+
+impl ListFactsSnapshots {
+    pub fn execute<R>(
+        repo: &R,
+        agent_id: &str,
+        limit: usize,
+        before: Option<SnapshotPageCursor>,
+    ) -> Result<Vec<FactsSnapshotPageRecord>, R::Error>
+    where
+        R: FactsRepository,
+    {
+        repo.list_facts_snapshots(agent_id, limit, before)
+    }
+}
+
 pub struct GetLatestMetrics;
 
 impl GetLatestMetrics {
@@ -1188,6 +1252,22 @@ impl GetLatestMetrics {
     }
 }
 
+pub struct ListMetricsSnapshots;
+
+impl ListMetricsSnapshots {
+    pub fn execute<R>(
+        repo: &R,
+        agent_id: &str,
+        limit: usize,
+        before: Option<SnapshotPageCursor>,
+    ) -> Result<Vec<MetricsSnapshotPageRecord>, R::Error>
+    where
+        R: MetricsRepository,
+    {
+        repo.list_metrics_snapshots(agent_id, limit, before)
+    }
+}
+
 pub struct GetLatestDrift;
 
 impl GetLatestDrift {
@@ -1196,6 +1276,22 @@ impl GetLatestDrift {
         R: DriftRepository,
     {
         repo.latest_drift_report(agent_id)
+    }
+}
+
+pub struct ListDriftReports;
+
+impl ListDriftReports {
+    pub fn execute<R>(
+        repo: &R,
+        agent_id: &str,
+        limit: usize,
+        before: Option<SnapshotPageCursor>,
+    ) -> Result<Vec<DriftReportPageRecord>, R::Error>
+    where
+        R: DriftRepository,
+    {
+        repo.list_drift_reports(agent_id, limit, before)
     }
 }
 
@@ -1699,10 +1795,28 @@ mod tests {
             sequence: 0,
             body: "ok".to_owned(),
         });
+        repo.facts.push(FactsSnapshotPageRecord {
+            agent_id: "agent-1".to_owned(),
+            body: "{\"os\":\"linux\"}".to_owned(),
+            collected_at: SystemTime::UNIX_EPOCH,
+            cursor: SnapshotPageCursor {
+                occurred_at: SystemTime::UNIX_EPOCH,
+                row_id: 1,
+            },
+        });
         repo.metrics = Some(MetricsSnapshotRecord {
             agent_id: "agent-1".to_owned(),
             body: "{\"cpu\":1}".to_owned(),
             collected_at: SystemTime::UNIX_EPOCH,
+        });
+        repo.metrics_pages.push(MetricsSnapshotPageRecord {
+            agent_id: "agent-1".to_owned(),
+            body: "{\"cpu\":1}".to_owned(),
+            collected_at: SystemTime::UNIX_EPOCH,
+            cursor: SnapshotPageCursor {
+                occurred_at: SystemTime::UNIX_EPOCH,
+                row_id: 1,
+            },
         });
         repo.drift = Some(DriftReportRecord {
             agent_id: "agent-1".to_owned(),
@@ -1714,6 +1828,20 @@ mod tests {
             },
             checked_at: SystemTime::UNIX_EPOCH,
         });
+        repo.drift_pages.push(DriftReportPageRecord {
+            agent_id: "agent-1".to_owned(),
+            report: DriftReport {
+                policy_name: "nginx-running".to_owned(),
+                status: fleet_domain::DriftStatus::Compliant,
+                expected: "service nginx running".to_owned(),
+                actual: "service nginx running".to_owned(),
+            },
+            checked_at: SystemTime::UNIX_EPOCH,
+            cursor: SnapshotPageCursor {
+                occurred_at: SystemTime::UNIX_EPOCH,
+                row_id: 1,
+            },
+        });
         repo.audit
             .push(AuditEvent::security("invalid_signature", "agent-1"));
 
@@ -1722,12 +1850,30 @@ mod tests {
             ListJobOutputForJob::execute(&repo, "job-1").unwrap().len(),
             1
         );
+        assert_eq!(
+            ListFactsSnapshots::execute(&repo, "agent-1", 50, None)
+                .unwrap()
+                .len(),
+            1
+        );
         assert!(
             GetLatestMetrics::execute(&repo, "agent-1")
                 .unwrap()
                 .is_some()
         );
+        assert_eq!(
+            ListMetricsSnapshots::execute(&repo, "agent-1", 50, None)
+                .unwrap()
+                .len(),
+            1
+        );
         assert!(GetLatestDrift::execute(&repo, "agent-1").unwrap().is_some());
+        assert_eq!(
+            ListDriftReports::execute(&repo, "agent-1", 50, None)
+                .unwrap()
+                .len(),
+            1
+        );
         assert_eq!(ListAuditEvents::execute(&repo, 50).unwrap().len(), 1);
     }
 
@@ -1889,8 +2035,11 @@ spec:
     struct FakeQueryRepository {
         jobs: Vec<JobSummaryRecord>,
         output: Vec<JobOutputChunk>,
+        facts: Vec<FactsSnapshotPageRecord>,
         metrics: Option<MetricsSnapshotRecord>,
+        metrics_pages: Vec<MetricsSnapshotPageRecord>,
         drift: Option<DriftReportRecord>,
+        drift_pages: Vec<DriftReportPageRecord>,
         audit: Vec<AuditEvent>,
     }
 
@@ -1959,6 +2108,69 @@ spec:
         ) -> Result<Option<MetricsSnapshotRecord>, Self::Error> {
             Ok(self.metrics.clone())
         }
+
+        fn list_metrics_snapshots(
+            &self,
+            _agent_id: &str,
+            limit: usize,
+            before: Option<SnapshotPageCursor>,
+        ) -> Result<Vec<MetricsSnapshotPageRecord>, Self::Error> {
+            Ok(self
+                .metrics_pages
+                .iter()
+                .filter(|record| before.is_none_or(|cursor| record.cursor.row_id < cursor.row_id))
+                .take(limit)
+                .cloned()
+                .collect())
+        }
+    }
+
+    impl FactsRepository for FakeQueryRepository {
+        type Error = Infallible;
+
+        fn insert_facts_snapshot(
+            &mut self,
+            agent_id: &str,
+            body: &str,
+            collected_at: SystemTime,
+        ) -> Result<(), Self::Error> {
+            self.facts.push(FactsSnapshotPageRecord {
+                agent_id: agent_id.to_owned(),
+                body: body.to_owned(),
+                collected_at,
+                cursor: SnapshotPageCursor {
+                    occurred_at: collected_at,
+                    row_id: self.facts.len() as i64 + 1,
+                },
+            });
+            Ok(())
+        }
+
+        fn latest_facts_snapshot(
+            &self,
+            _agent_id: &str,
+        ) -> Result<Option<FactsSnapshotRecord>, Self::Error> {
+            Ok(self.facts.last().map(|record| FactsSnapshotRecord {
+                agent_id: record.agent_id.clone(),
+                body: record.body.clone(),
+                collected_at: record.collected_at,
+            }))
+        }
+
+        fn list_facts_snapshots(
+            &self,
+            _agent_id: &str,
+            limit: usize,
+            before: Option<SnapshotPageCursor>,
+        ) -> Result<Vec<FactsSnapshotPageRecord>, Self::Error> {
+            Ok(self
+                .facts
+                .iter()
+                .filter(|record| before.is_none_or(|cursor| record.cursor.row_id < cursor.row_id))
+                .take(limit)
+                .cloned()
+                .collect())
+        }
     }
 
     impl DriftRepository for FakeQueryRepository {
@@ -1983,6 +2195,21 @@ spec:
             _agent_id: &str,
         ) -> Result<Option<DriftReportRecord>, Self::Error> {
             Ok(self.drift.clone())
+        }
+
+        fn list_drift_reports(
+            &self,
+            _agent_id: &str,
+            limit: usize,
+            before: Option<SnapshotPageCursor>,
+        ) -> Result<Vec<DriftReportPageRecord>, Self::Error> {
+            Ok(self
+                .drift_pages
+                .iter()
+                .filter(|record| before.is_none_or(|cursor| record.cursor.row_id < cursor.row_id))
+                .take(limit)
+                .cloned()
+                .collect())
         }
     }
 

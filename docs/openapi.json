@@ -1,0 +1,1108 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Sponzey Fleet Controller API",
+    "version": "0.1.11",
+    "summary": "REST API for the Sponzey Fleet controller.",
+    "description": "Sponzey Fleet exposes controller APIs for agent enrollment, inventory, job dispatch, snapshots, drift reports, and audit events. HTTP transport is supported only for local or short-lived tests. Use HTTPS for product, production, shared, or long-running environments because HTTP does not provide confidentiality or integrity."
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "Current controller origin"
+    }
+  ],
+  "tags": [
+    { "name": "System", "description": "Readiness, identity, and API documentation." },
+    { "name": "Enrollment", "description": "Enrollment token lifecycle and agent registration." },
+    { "name": "Agents", "description": "Agent inventory, labels, key revocation, and latest snapshots." },
+    { "name": "Jobs", "description": "Command, runbook, drift check, and job output APIs." },
+    { "name": "Audit", "description": "Recent audit events." }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "admin-token",
+        "description": "Paste the admin token printed by `sponzey controller init`. Do not use real tokens in examples or logs."
+      }
+    },
+    "schemas": {
+      "ErrorResponse": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": { "type": "string", "example": "not_found" }
+        },
+        "additionalProperties": false
+      },
+      "HealthResponse": {
+        "type": "object",
+        "required": ["status"],
+        "properties": {
+          "status": { "type": "string", "example": "ok" }
+        },
+        "additionalProperties": false
+      },
+      "ControllerTlsEndpointResponse": {
+        "type": "object",
+        "required": ["external_url", "tls_enabled"],
+        "properties": {
+          "external_url": { "type": ["string", "null"], "example": "https://fleet.example.com" },
+          "tls_enabled": { "type": "boolean", "example": true }
+        },
+        "additionalProperties": false
+      },
+      "ControllerIdentityResponse": {
+        "type": "object",
+        "required": [
+          "controller_public_key",
+          "controller_fingerprint",
+          "controller_signing_public_key",
+          "controller_signing_fingerprint",
+          "tls_endpoint"
+        ],
+        "properties": {
+          "controller_public_key": { "type": "string", "example": "<controller-public-key-hex>" },
+          "controller_fingerprint": { "type": "string", "example": "<controller-fingerprint>" },
+          "controller_signing_public_key": { "type": "string", "example": "<controller-public-key-hex>" },
+          "controller_signing_fingerprint": { "type": "string", "example": "<controller-fingerprint>" },
+          "tls_endpoint": { "$ref": "#/components/schemas/ControllerTlsEndpointResponse" }
+        },
+        "additionalProperties": false
+      },
+      "AgentLabel": {
+        "type": "object",
+        "required": ["key", "value"],
+        "properties": {
+          "key": { "type": "string", "example": "role" },
+          "value": { "type": "string", "example": "web" }
+        },
+        "additionalProperties": false
+      },
+      "EnrollAgentRequest": {
+        "type": "object",
+        "required": ["token", "agent_id", "name", "public_key", "fingerprint", "labels"],
+        "properties": {
+          "token": { "type": "string", "example": "<enrollment-token>" },
+          "agent_id": { "type": "string", "example": "agent-web-01" },
+          "name": { "type": "string", "example": "web-01" },
+          "public_key": { "type": "string", "example": "<agent-public-key-hex>" },
+          "fingerprint": { "type": "string", "example": "<agent-fingerprint>" },
+          "labels": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/AgentLabel" }
+          }
+        },
+        "additionalProperties": false
+      },
+      "EnrollAgentResponse": {
+        "type": "object",
+        "required": ["agent_id", "controller_public_key", "controller_fingerprint"],
+        "properties": {
+          "agent_id": { "type": "string", "example": "agent-web-01" },
+          "controller_public_key": { "type": "string", "example": "<controller-public-key-hex>" },
+          "controller_fingerprint": { "type": "string", "example": "<controller-fingerprint>" }
+        },
+        "additionalProperties": false
+      },
+      "CreateEnrollmentTokenRequest": {
+        "type": "object",
+        "properties": {
+          "labels": { "type": "string", "example": "role=web,env=prod" },
+          "default_labels": { "type": "string", "example": "role=web,env=prod" },
+          "max_uses": { "type": "integer", "minimum": 1, "default": 1, "example": 1 },
+          "expires_in_seconds": { "type": "integer", "minimum": 1, "default": 3600, "example": 3600 }
+        },
+        "additionalProperties": false
+      },
+      "CreateEnrollmentTokenResponse": {
+        "type": "object",
+        "required": ["id", "token", "expires_in_seconds"],
+        "properties": {
+          "id": { "type": "string", "example": "et-..." },
+          "token": {
+            "type": "string",
+            "example": "<enrollment-token>",
+            "description": "Sensitive raw enrollment token. It is returned once immediately after creation and is not stored in plaintext."
+          },
+          "expires_in_seconds": { "type": "integer", "example": 3600 }
+        },
+        "additionalProperties": false
+      },
+      "EnrollmentTokenSummary": {
+        "type": "object",
+        "required": [
+          "id",
+          "default_labels",
+          "max_uses",
+          "used_count",
+          "remaining_uses",
+          "revoked",
+          "expires_at_epoch"
+        ],
+        "properties": {
+          "id": { "type": "string", "example": "et-..." },
+          "default_labels": { "type": "string", "example": "role=web,env=prod" },
+          "max_uses": { "type": "integer", "example": 1 },
+          "used_count": { "type": "integer", "example": 0 },
+          "remaining_uses": { "type": "integer", "example": 1 },
+          "revoked": { "type": "boolean", "example": false },
+          "expires_at_epoch": { "type": "integer", "example": 1710003600 }
+        },
+        "additionalProperties": false
+      },
+      "AgentResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "status",
+          "revoked",
+          "fingerprint",
+          "labels",
+          "last_seen_at_ms",
+          "last_seen_age_seconds",
+          "hostname",
+          "os",
+          "arch"
+        ],
+        "properties": {
+          "id": { "type": "string", "example": "agent-web-01" },
+          "name": { "type": "string", "example": "web-01" },
+          "status": { "type": "string", "enum": ["pending", "online", "offline", "degraded", "disabled"], "example": "online" },
+          "revoked": { "type": "boolean", "example": false },
+          "fingerprint": { "type": "string", "example": "<agent-fingerprint>" },
+          "labels": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/AgentLabel" }
+          },
+          "last_seen_at_ms": { "type": ["integer", "null"], "example": 1710000000000 },
+          "last_seen_age_seconds": { "type": ["integer", "null"], "example": 12 },
+          "hostname": { "type": ["string", "null"], "example": "web-01" },
+          "os": { "type": ["string", "null"], "example": "linux" },
+          "arch": { "type": ["string", "null"], "example": "x86_64" }
+        },
+        "additionalProperties": false
+      },
+      "UpdateAgentLabelsRequest": {
+        "type": "object",
+        "required": ["labels"],
+        "properties": {
+          "labels": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/AgentLabel" }
+          }
+        },
+        "additionalProperties": false
+      },
+      "LatestFactsResponse": {
+        "type": "object",
+        "required": ["agent_id", "collected_at_ms", "agent_system_time_ms", "body"],
+        "properties": {
+          "agent_id": { "type": "string", "example": "agent-web-01" },
+          "collected_at_ms": { "type": "integer", "example": 1710000000000 },
+          "agent_system_time_ms": {
+            "type": "integer",
+            "description": "System time reported by the agent when it produced this snapshot.",
+            "example": 1710000000000
+          },
+          "body": { "type": "object", "additionalProperties": true }
+        },
+        "additionalProperties": false
+      },
+      "FactsSnapshotItem": {
+        "type": "object",
+        "required": ["agent_id", "collected_at_ms", "agent_system_time_ms", "body", "cursor"],
+        "properties": {
+          "agent_id": { "type": "string", "example": "agent-web-01" },
+          "collected_at_ms": { "type": "integer", "example": 1710000000000 },
+          "agent_system_time_ms": {
+            "type": "integer",
+            "description": "System time reported by the agent when it produced this snapshot.",
+            "example": 1710000000000
+          },
+          "body": { "type": "object", "additionalProperties": true },
+          "cursor": { "type": "string", "example": "1710000000:42" }
+        },
+        "additionalProperties": false
+      },
+      "FactsSnapshotPage": {
+        "type": "object",
+        "required": ["items", "next_cursor"],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/FactsSnapshotItem" }
+          },
+          "next_cursor": {
+            "type": ["string", "null"],
+            "description": "Pass this value as the `before` query parameter to fetch the next page.",
+            "example": "1710000000:42"
+          }
+        },
+        "additionalProperties": false
+      },
+      "LatestMetricsResponse": {
+        "type": "object",
+        "required": ["agent_id", "collected_at_ms", "agent_system_time_ms", "body"],
+        "properties": {
+          "agent_id": { "type": "string", "example": "agent-web-01" },
+          "collected_at_ms": { "type": "integer", "example": 1710000000000 },
+          "agent_system_time_ms": {
+            "type": "integer",
+            "description": "System time reported by the agent when it produced this snapshot.",
+            "example": 1710000000000
+          },
+          "body": { "type": "object", "additionalProperties": true }
+        },
+        "additionalProperties": false
+      },
+      "MetricsSnapshotItem": {
+        "type": "object",
+        "required": ["agent_id", "collected_at_ms", "agent_system_time_ms", "body", "cursor"],
+        "properties": {
+          "agent_id": { "type": "string", "example": "agent-web-01" },
+          "collected_at_ms": { "type": "integer", "example": 1710000000000 },
+          "agent_system_time_ms": {
+            "type": "integer",
+            "description": "System time reported by the agent when it produced this snapshot.",
+            "example": 1710000000000
+          },
+          "body": { "type": "object", "additionalProperties": true },
+          "cursor": { "type": "string", "example": "1710000000:42" }
+        },
+        "additionalProperties": false
+      },
+      "MetricsSnapshotPage": {
+        "type": "object",
+        "required": ["items", "next_cursor"],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/MetricsSnapshotItem" }
+          },
+          "next_cursor": {
+            "type": ["string", "null"],
+            "description": "Pass this value as the `before` query parameter to fetch the next page.",
+            "example": "1710000000:42"
+          }
+        },
+        "additionalProperties": false
+      },
+      "LatestDriftReportResponse": {
+        "type": "object",
+        "required": ["agent_id", "checked_at_ms", "agent_system_time_ms", "policy_name", "status", "expected", "actual"],
+        "properties": {
+          "agent_id": { "type": "string", "example": "agent-web-01" },
+          "checked_at_ms": { "type": "integer", "example": 1710000000000 },
+          "agent_system_time_ms": {
+            "type": "integer",
+            "description": "System time reported by the agent when it produced this drift report.",
+            "example": 1710000000000
+          },
+          "policy_name": { "type": "string", "example": "nginx-running" },
+          "status": { "type": "string", "example": "drifted" },
+          "expected": { "type": "string", "example": "service nginx running" },
+          "actual": { "type": "string", "example": "service nginx stopped" }
+        },
+        "additionalProperties": false
+      },
+      "DriftReportItem": {
+        "type": "object",
+        "required": ["agent_id", "checked_at_ms", "agent_system_time_ms", "policy_name", "status", "expected", "actual", "cursor"],
+        "properties": {
+          "agent_id": { "type": "string", "example": "agent-web-01" },
+          "checked_at_ms": { "type": "integer", "example": 1710000000000 },
+          "agent_system_time_ms": {
+            "type": "integer",
+            "description": "System time reported by the agent when it produced this drift report.",
+            "example": 1710000000000
+          },
+          "policy_name": { "type": "string", "example": "nginx-running" },
+          "status": { "type": "string", "example": "drifted" },
+          "expected": { "type": "string", "example": "service nginx running" },
+          "actual": { "type": "string", "example": "service nginx stopped" },
+          "cursor": { "type": "string", "example": "1710000000:42" }
+        },
+        "additionalProperties": false
+      },
+      "DriftReportPage": {
+        "type": "object",
+        "required": ["items", "next_cursor"],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/DriftReportItem" }
+          },
+          "next_cursor": {
+            "type": ["string", "null"],
+            "description": "Pass this value as the `before` query parameter to fetch the next page.",
+            "example": "1710000000:42"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CommandJobRequest": {
+        "type": "object",
+        "required": ["job_id", "target_agent_ids", "program", "timeout_seconds", "confirmed_high_risk"],
+        "properties": {
+          "job_id": { "type": "string", "example": "job-1" },
+          "target_agent_ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "example": ["agent-web-01"]
+          },
+          "selector": { "type": ["string", "null"], "example": "role=web" },
+          "program": { "type": "string", "example": "uptime" },
+          "args": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": []
+          },
+          "timeout_seconds": { "type": "integer", "minimum": 1, "example": 30 },
+          "confirmed_high_risk": { "type": "boolean", "example": true },
+          "confirmed_by": { "type": "string", "default": "admin", "example": "operator@example.com" },
+          "expires_in_seconds": { "type": "integer", "default": 60, "example": 60 },
+          "nonce_prefix": { "type": ["string", "null"], "example": "nonce-job-1" }
+        },
+        "additionalProperties": false
+      },
+      "RunbookJobRequest": {
+        "type": "object",
+        "required": ["job_id", "target_agent_ids", "runbook_document", "confirmed_high_risk"],
+        "properties": {
+          "job_id": { "type": "string", "example": "job-runbook-1" },
+          "target_agent_ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "example": []
+          },
+          "selector": { "type": ["string", "null"], "example": "role=web" },
+          "runbook_document": { "type": "string", "example": "apiVersion: fleet.sponzey.dev/v1alpha1\nkind: Runbook\nmetadata:\n  name: nginx-basic\nspec:\n  targets:\n    selector: role=web\n  tasks: []\n" },
+          "timeout_seconds": { "type": "integer", "default": 30, "example": 180 },
+          "confirmed_high_risk": { "type": "boolean", "example": true },
+          "confirmed_by": { "type": "string", "default": "admin", "example": "operator@example.com" },
+          "expires_in_seconds": { "type": "integer", "default": 60, "example": 300 },
+          "nonce_prefix": { "type": ["string", "null"], "example": "nonce-runbook-1" }
+        },
+        "additionalProperties": false
+      },
+      "DriftCheckJobRequest": {
+        "type": "object",
+        "required": ["job_id", "target_agent_ids", "policy_document"],
+        "properties": {
+          "job_id": { "type": "string", "example": "job-drift-1" },
+          "target_agent_ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "example": []
+          },
+          "selector": { "type": ["string", "null"], "example": "role=web" },
+          "policy_document": { "type": "string", "example": "apiVersion: fleet.sponzey.dev/v1alpha1\nkind: Policy\nmetadata:\n  name: nginx-running\nspec:\n  targets:\n    selector: role=web\n  checks: []\n" },
+          "timeout_seconds": { "type": "integer", "default": 30, "example": 30 },
+          "created_by": { "type": "string", "default": "admin", "example": "operator@example.com" },
+          "expires_in_seconds": { "type": "integer", "default": 60, "example": 300 },
+          "nonce_prefix": { "type": ["string", "null"], "example": "nonce-drift-1" }
+        },
+        "additionalProperties": false
+      },
+      "CreateJobResponse": {
+        "type": "object",
+        "required": ["job_id", "target_count", "assignment_count"],
+        "properties": {
+          "job_id": { "type": "string", "example": "job-1" },
+          "target_count": { "type": "integer", "example": 1 },
+          "assignment_count": { "type": "integer", "example": 1 }
+        },
+        "additionalProperties": false
+      },
+      "JobSummary": {
+        "type": "object",
+        "required": ["id", "status", "risk", "command_program", "command_args", "target_count", "created_at_ms"],
+        "properties": {
+          "id": { "type": "string", "example": "job-1" },
+          "status": { "type": "string", "example": "queued" },
+          "risk": { "type": "string", "example": "high" },
+          "command_program": { "type": ["string", "null"], "example": "uptime" },
+          "command_args": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "target_count": { "type": "integer", "example": 1 },
+          "created_at_ms": { "type": "integer", "example": 1710000000000 }
+        },
+        "additionalProperties": false
+      },
+      "JobOutputChunk": {
+        "type": "object",
+        "required": ["job_id", "agent_id", "stream", "sequence", "data"],
+        "properties": {
+          "job_id": { "type": "string", "example": "job-1" },
+          "agent_id": { "type": "string", "example": "agent-web-01" },
+          "stream": { "type": "string", "enum": ["stdout", "stderr"], "example": "stdout" },
+          "sequence": { "type": "integer", "example": 0 },
+          "data": { "type": "string", "example": "ok" }
+        },
+        "additionalProperties": false
+      },
+      "AuditEvent": {
+        "type": "object",
+        "required": ["category", "action", "actor", "target", "value_kind", "value", "occurred_at_ms"],
+        "properties": {
+          "category": { "type": "string", "example": "security" },
+          "action": { "type": "string", "example": "agent_key_revoked" },
+          "actor": { "type": "string", "example": "admin" },
+          "target": { "type": "string", "example": "agent-web-01" },
+          "value_kind": { "type": "string", "example": "plain" },
+          "value": { "type": "string", "example": "status=revoked" },
+          "occurred_at_ms": { "type": "integer", "example": 1710000000000 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Admin token is missing or invalid.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "examples": {
+              "unauthorized": { "value": { "error": "unauthorized" } }
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "The requested record was not found.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "examples": {
+              "notFound": { "value": { "error": "not_found" } }
+            }
+          }
+        }
+      },
+      "BadRequest": {
+        "description": "The request body or path parameter was invalid.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "The request conflicts with an existing record or state.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/healthz": {
+      "get": {
+        "tags": ["System"],
+        "summary": "Check controller readiness.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Controller is accepting requests.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HealthResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "tags": ["System"],
+        "summary": "Return the OpenAPI 3.1 document.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OpenAPI JSON document.",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "additionalProperties": true }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/swagger-ui": {
+      "get": {
+        "tags": ["System"],
+        "summary": "Open Swagger UI for the controller REST API.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Swagger UI HTML.",
+            "content": {
+              "text/html": {
+                "schema": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/controller/identity": {
+      "get": {
+        "tags": ["System"],
+        "summary": "Read the controller signing identity.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Controller public identity and TLS metadata.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ControllerIdentityResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/enroll": {
+      "post": {
+        "tags": ["Enrollment"],
+        "summary": "Enroll an agent with an enrollment token.",
+        "description": "This endpoint does not use the admin bearer token. The one-time enrollment token is provided in the request body.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/EnrollAgentRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Agent was enrolled.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/EnrollAgentResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "409": { "$ref": "#/components/responses/Conflict" }
+        }
+      }
+    },
+    "/api/enrollment-tokens": {
+      "get": {
+        "tags": ["Enrollment"],
+        "summary": "List enrollment token summaries.",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Enrollment token summaries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/EnrollmentTokenSummary" }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      },
+      "post": {
+        "tags": ["Enrollment"],
+        "summary": "Create a one-time enrollment token.",
+        "description": "The raw token is returned only once. Store it securely and do not log it.",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateEnrollmentTokenRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Enrollment token was created.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CreateEnrollmentTokenResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/enrollment-tokens/{id}": {
+      "delete": {
+        "tags": ["Enrollment"],
+        "summary": "Revoke an enrollment token.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "204": { "description": "Enrollment token was revoked." },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/agents": {
+      "get": {
+        "tags": ["Agents"],
+        "summary": "List known agents.",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Agent inventory.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/AgentResponse" }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/agents/{agent_id}": {
+      "get": {
+        "tags": ["Agents"],
+        "summary": "Get one agent.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "agent_id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Agent detail.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AgentResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/agents/{agent_id}/labels": {
+      "patch": {
+        "tags": ["Agents"],
+        "summary": "Replace labels for an agent.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "agent_id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateAgentLabelsRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated agent.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AgentResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/agents/{agent_id}/revoke-key": {
+      "post": {
+        "tags": ["Agents"],
+        "summary": "Revoke an agent.",
+        "description": "Disables the current agent key. The agent is shown as offline and revoked and must be enrolled again with a new enrollment token.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "agent_id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Revoked agent detail.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AgentResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/agents/{agent_id}/facts/latest": {
+      "get": {
+        "tags": ["Agents"],
+        "summary": "Get the latest facts snapshot for an agent.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "agent_id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Latest facts snapshot, or null when none exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/LatestFactsResponse" },
+                    { "type": "null" }
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/agents/{agent_id}/facts": {
+      "get": {
+        "tags": ["Agents"],
+        "summary": "List facts snapshots for an agent.",
+        "description": "Returns newest snapshots first. Use `limit` and pass the previous response `next_cursor` as `before` to fetch the next page.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "agent_id", "in": "path", "required": true, "schema": { "type": "string" } },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50 }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "description": "Opaque cursor from `next_cursor`.",
+            "schema": { "type": "string", "example": "1710000000:42" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paged facts snapshots.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/FactsSnapshotPage" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/agents/{agent_id}/metrics/latest": {
+      "get": {
+        "tags": ["Agents"],
+        "summary": "Get the latest metrics snapshot for an agent.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "agent_id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Latest metrics snapshot, or null when none exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/LatestMetricsResponse" },
+                    { "type": "null" }
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/agents/{agent_id}/metrics": {
+      "get": {
+        "tags": ["Agents"],
+        "summary": "List metrics snapshots for an agent.",
+        "description": "Returns newest snapshots first. Use `limit` and pass the previous response `next_cursor` as `before` to fetch the next page.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "agent_id", "in": "path", "required": true, "schema": { "type": "string" } },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50 }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "description": "Opaque cursor from `next_cursor`.",
+            "schema": { "type": "string", "example": "1710000000:42" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paged metrics snapshots.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MetricsSnapshotPage" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/agents/{agent_id}/drift/latest": {
+      "get": {
+        "tags": ["Agents"],
+        "summary": "Get the latest drift report for an agent.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "agent_id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Latest drift report, or null when none exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/LatestDriftReportResponse" },
+                    { "type": "null" }
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/agents/{agent_id}/drift": {
+      "get": {
+        "tags": ["Agents"],
+        "summary": "List drift reports for an agent.",
+        "description": "Returns newest reports first. Use `limit` and pass the previous response `next_cursor` as `before` to fetch the next page.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "agent_id", "in": "path", "required": true, "schema": { "type": "string" } },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50 }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "description": "Opaque cursor from `next_cursor`.",
+            "schema": { "type": "string", "example": "1710000000:42" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paged drift reports.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DriftReportPage" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/jobs": {
+      "get": {
+        "tags": ["Jobs"],
+        "summary": "List recent jobs.",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Recent job summaries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/JobSummary" }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/jobs/command": {
+      "post": {
+        "tags": ["Jobs"],
+        "summary": "Create a command job.",
+        "description": "Command jobs are high risk and require explicit confirmation.",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CommandJobRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Command job was created.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CreateJobResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "409": { "$ref": "#/components/responses/Conflict" }
+        }
+      }
+    },
+    "/api/jobs/runbook": {
+      "post": {
+        "tags": ["Jobs"],
+        "summary": "Create a runbook job.",
+        "description": "Runbook jobs are high risk and require explicit confirmation.",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RunbookJobRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Runbook job was created.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CreateJobResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "409": { "$ref": "#/components/responses/Conflict" }
+        }
+      }
+    },
+    "/api/jobs/drift-check": {
+      "post": {
+        "tags": ["Jobs"],
+        "summary": "Create a drift check job.",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/DriftCheckJobRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Drift check job was created.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CreateJobResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "409": { "$ref": "#/components/responses/Conflict" }
+        }
+      }
+    },
+    "/api/jobs/{job_id}/output": {
+      "get": {
+        "tags": ["Jobs"],
+        "summary": "List stored output chunks for a job.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "job_id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Stored output chunks.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/JobOutputChunk" }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/audit": {
+      "get": {
+        "tags": ["Audit"],
+        "summary": "List recent audit events.",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Recent audit events.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/AuditEvent" }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    }
+  }
+}

@@ -4,6 +4,18 @@ function encodePathValue(value) {
   return encodeURIComponent(String(value ?? ""));
 }
 
+function pageQuery({ limit, before } = {}) {
+  const params = new URLSearchParams();
+  if (limit !== undefined && limit !== null && limit !== "") {
+    params.set("limit", String(limit));
+  }
+  if (before) {
+    params.set("before", String(before));
+  }
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
+
 function defaultFormatApiError(path, status) {
   if (status === 401 || status === 403) {
     return "Controller rejected this request. Check the admin token and permissions.";
@@ -54,11 +66,20 @@ export function createApiClient({ fetchImpl = globalThis.fetch, tokenProvider = 
     getLatestFacts(agentId) {
       return request(`/api/agents/${encodePathValue(agentId)}/facts/latest`);
     },
+    listFacts(agentId, page = {}) {
+      return request(`/api/agents/${encodePathValue(agentId)}/facts${pageQuery(page)}`);
+    },
     getLatestMetrics(agentId) {
       return request(`/api/agents/${encodePathValue(agentId)}/metrics/latest`);
     },
+    listMetrics(agentId, page = {}) {
+      return request(`/api/agents/${encodePathValue(agentId)}/metrics${pageQuery(page)}`);
+    },
     getLatestDrift(agentId) {
       return request(`/api/agents/${encodePathValue(agentId)}/drift/latest`);
+    },
+    listDrift(agentId, page = {}) {
+      return request(`/api/agents/${encodePathValue(agentId)}/drift${pageQuery(page)}`);
     },
     revokeAgentKey(agentId, body = {}) {
       return request(`/api/agents/${encodePathValue(agentId)}/revoke-key`, {

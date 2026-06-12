@@ -32,6 +32,7 @@ Sponzey Fleet agent-controller protocol은 JSON wire message를 사용한다. Ru
 - `message_id`는 message 단위 식별자다.
 - `correlation_id`는 request-response 또는 task-output 흐름을 묶는다.
 - `agent_id`는 enrollment 이전 message에서는 없을 수 있다.
+- `timestamp_ms`는 message를 만든 쪽의 시스템 시각이다. Agent가 보내는 facts, metrics, drift report message의 `timestamp_ms`는 controller 저장 시각과 API 응답의 `agent_system_time_ms` 기준이 된다.
 
 ## Auth/Session Payloads
 
@@ -103,6 +104,34 @@ task 실행과 결과 전달용 payload:
 - `drift_report`
 
 인증/session payload와 task/data payload는 protocol layer에서 구분된다. agent는 authenticated session 이후에만 task/data channel message를 처리해야 한다.
+
+Facts and metrics payloads include a lightweight system timestamp inside the JSON body so operators can identify when the agent produced the snapshot even after paging or exporting API responses.
+
+Facts snapshot:
+
+```json
+{
+  "type": "facts_snapshot",
+  "payload": {
+    "agent_id": "agent-1",
+    "body": "{\"system_time_ms\":1710000000000,\"os\":\"linux\",\"arch\":\"x86_64\"}"
+  }
+}
+```
+
+Metrics snapshot:
+
+```json
+{
+  "type": "metrics_snapshot",
+  "payload": {
+    "agent_id": "agent-1",
+    "body": "{\"system_time_ms\":1710000000000,\"cpu\":{\"logical_count\":4}}"
+  }
+}
+```
+
+Drift report does not carry an arbitrary JSON body, so controller uses the agent message envelope `timestamp_ms` as both `checked_at_ms` and `agent_system_time_ms`.
 
 ## Signed Task Envelope
 

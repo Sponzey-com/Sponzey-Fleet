@@ -72,6 +72,21 @@ sponzey demo
 
 임시 controller를 띄우고, 임시 agent를 등록하고, sample job을 실행한 뒤 Web Admin URL을 출력합니다.
 
+## API 문서
+
+Controller는 운영자 화면을 `/admin`에서 제공합니다. 외부 REST API 문서는
+OpenAPI 3.1 JSON과 Swagger UI로 제공합니다.
+
+```text
+GET /openapi.json
+GET /swagger-ui
+```
+
+보호 API를 호출할 때는 `sponzey controller init`이 출력한 admin token을
+Bearer token으로 사용합니다. HTTP에서 Swagger UI를 쓰면 token과 request
+payload가 암호화되지 않으므로 로컬 또는 짧은 테스트 용도로만 사용해야
+합니다. 상세 API 계약은 [docs/api.md](docs/api.md)에 유지합니다.
+
 ## Transport 안전 경고
 
 HTTP controller URL은 설치 확인, 로컬 개발, 실험실 테스트, 짧은 검증 용도로만

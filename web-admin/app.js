@@ -64,18 +64,31 @@ export function renderSnapshot(snapshot, missingText) {
   if (!snapshot || !snapshot.body) {
     return missingText;
   }
-  return JSON.stringify(snapshot.body, null, 2);
+  const agentTime = formatUnixMillis(snapshot.agent_system_time_ms);
+  const collectedAt = formatUnixMillis(snapshot.collected_at_ms);
+  const header = [
+    agentTime ? `Agent time: ${agentTime}` : "",
+    collectedAt ? `Stored at: ${collectedAt}` : "",
+  ].filter(Boolean);
+  const body = JSON.stringify(snapshot.body, null, 2);
+  return header.length > 0 ? `${header.join("\n")}\n\n${body}` : body;
 }
 
 export function renderDrift(report) {
   if (!report) {
     return '<div class="empty">No drift report.</div>';
   }
+  const agentTime = formatUnixMillis(report.agent_system_time_ms);
+  const checkedAt = formatUnixMillis(report.checked_at_ms);
+  const timeMeta = [agentTime ? `Agent time ${agentTime}` : "", checkedAt ? `Checked ${checkedAt}` : ""]
+    .filter(Boolean)
+    .join(" | ");
   return `
     <div class="drift-summary">
       <span class="status-pill ${escapeHtml(report.status)}">${escapeHtml(report.status)}</span>
       <strong>${escapeHtml(report.policy_name)}</strong>
     </div>
+    ${timeMeta ? `<div class="snapshot-time">${escapeHtml(timeMeta)}</div>` : ""}
     <div class="diff-grid">
       <section>
         <h3>Expected</h3>
@@ -87,6 +100,17 @@ export function renderDrift(report) {
       </section>
     </div>
   `;
+}
+
+export function formatUnixMillis(value) {
+  if (!Number.isFinite(value)) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return `${date.toISOString()} (${value} ms)`;
 }
 
 export function renderAudit(events) {
@@ -405,7 +429,7 @@ async function revokeSelectedAgentKey() {
   const label = agent.name || agent.id;
   if (
     typeof globalThis.confirm === "function" &&
-    !globalThis.confirm(`Revoke key for ${label}?`)
+    !globalThis.confirm(`Revoke agent ${label}? This disables its current key.`)
   ) {
     return;
   }
@@ -417,7 +441,7 @@ async function revokeSelectedAgentKey() {
   syncAgentActions();
   await refreshSelectedAgent();
   document.querySelector("#audit-list").innerHTML = renderAudit(await api.listAudit());
-  setStatus(`Revoked agent key for ${label}.`, "ok");
+  setStatus(`Revoked agent ${label}.`, "ok");
 }
 
 async function submitCommand(form) {

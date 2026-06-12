@@ -74,6 +74,21 @@ sponzey demo
 This starts a temporary controller, enrolls a temporary agent, runs a sample job,
 and prints the Web Admin URL.
 
+## API Documentation
+
+The Controller serves the operator UI at `/admin`. External REST API
+documentation is available as OpenAPI 3.1 JSON and Swagger UI:
+
+```text
+GET /openapi.json
+GET /swagger-ui
+```
+
+Protected API calls use the admin token printed by `sponzey controller init` as
+a Bearer token. Do not use Swagger UI over HTTP except for local or short-lived
+tests because tokens and request payloads are not encrypted. The detailed API
+contract is maintained in [docs/api.md](docs/api.md).
+
 ## Transport Safety Warning
 
 HTTP controller URLs are supported for setup checks, local development, lab

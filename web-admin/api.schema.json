@@ -3,8 +3,11 @@
   "endpoints": [
     { "name": "listAgents", "method": "GET", "path": "/api/agents" },
     { "name": "getLatestFacts", "method": "GET", "path": "/api/agents/{agent_id}/facts/latest" },
+    { "name": "listFacts", "method": "GET", "path": "/api/agents/{agent_id}/facts" },
     { "name": "getLatestMetrics", "method": "GET", "path": "/api/agents/{agent_id}/metrics/latest" },
+    { "name": "listMetrics", "method": "GET", "path": "/api/agents/{agent_id}/metrics" },
     { "name": "getLatestDrift", "method": "GET", "path": "/api/agents/{agent_id}/drift/latest" },
+    { "name": "listDrift", "method": "GET", "path": "/api/agents/{agent_id}/drift" },
     { "name": "revokeAgentKey", "method": "POST", "path": "/api/agents/{agent_id}/revoke-key" },
     { "name": "listJobs", "method": "GET", "path": "/api/jobs" },
     { "name": "getJobOutput", "method": "GET", "path": "/api/jobs/{job_id}/output" },

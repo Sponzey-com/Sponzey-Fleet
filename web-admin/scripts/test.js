@@ -25,6 +25,7 @@ const tsconfig = JSON.parse(readFileSync(tsconfigPath, "utf8"));
 assert(index.includes("Sponzey Fleet Admin"), "index must name the admin UI");
 assert(index.includes("id=\"agents-list\""), "index must expose the agents surface");
 assert(index.includes("id=\"revoke-agent-key\""), "index must expose agent key revocation");
+assert(index.includes(">Revoke Agent</button>"), "index must label agent revocation by agent");
 assert(index.includes("id=\"facts-panel\""), "index must expose the facts surface");
 assert(index.includes("id=\"metrics-panel\""), "index must expose the metrics surface");
 assert(index.includes("id=\"drift-panel\""), "index must expose the drift surface");
@@ -42,6 +43,7 @@ assert(index.includes('method="post"'), "admin auth form must not leak tokens th
 assert(!index.includes("localStorage"), "UI must not store tokens in localStorage");
 assert(!index.includes("runtime config"), "UI must not expose runtime config mutation");
 assert(styles.includes(".layout"), "styles must include the admin layout");
+assert(styles.includes(".snapshot-time"), "styles must include snapshot time metadata");
 assert(app.includes("./api-client.js"), "app must use the shared API client");
 assert(app.includes("handleAgentsListClick"), "app must use delegated agent selection handling");
 assert(
@@ -53,8 +55,11 @@ assert(schema.schema_version === "mvp-1", "API schema version must match MVP cli
 for (const endpoint of [
   "listAgents",
   "getLatestFacts",
+  "listFacts",
   "getLatestMetrics",
+  "listMetrics",
   "getLatestDrift",
+  "listDrift",
   "revokeAgentKey",
   "listJobs",
   "getJobOutput",
@@ -85,6 +90,7 @@ const {
   renderEnrollmentTokens,
   renderCreatedEnrollmentToken,
   buildEnrollmentTokenRequest,
+  formatUnixMillis,
 } = await import(appPath);
 const { API_SCHEMA_VERSION, createApiClient, normalizeAdminToken } = await import(clientPath);
 assert(API_SCHEMA_VERSION === schema.schema_version, "API client and schema versions must match");
@@ -108,6 +114,9 @@ const client = createApiClient({
 });
 await client.listAgents();
 await client.getLatestFacts("agent/1");
+await client.listFacts("agent/1", { limit: 25, before: "2:10" });
+await client.listMetrics("agent/1", { limit: 10 });
+await client.listDrift("agent/1", { before: "2:9" });
 await client.revokeAgentKey("agent/1");
 await client.listEnrollmentTokens();
 await client.createEnrollmentToken({ labels: "role=web", max_uses: 1, expires_in_seconds: 60 });
@@ -120,18 +129,30 @@ assert(
   "client must encode agent ids in paths",
 );
 assert(
-  calls[2].path === "/api/agents/agent%2F1/revoke-key",
+  calls[2].path === "/api/agents/agent%2F1/facts?limit=25&before=2%3A10",
+  "client must encode paged facts query",
+);
+assert(
+  calls[3].path === "/api/agents/agent%2F1/metrics?limit=10",
+  "client must encode paged metrics query",
+);
+assert(
+  calls[4].path === "/api/agents/agent%2F1/drift?before=2%3A9",
+  "client must encode paged drift query",
+);
+assert(
+  calls[5].path === "/api/agents/agent%2F1/revoke-key",
   "client must encode agent ids in key revocation paths",
 );
-assert(calls[2].options.method === "POST", "client must POST agent key revocation");
-assert(calls[3].path === "/api/enrollment-tokens", "client must call token list endpoint");
-assert(calls[4].path === "/api/enrollment-tokens", "client must call token create endpoint");
-assert(calls[4].options.method === "POST", "client must POST token creation");
-assert(calls[5].path === "/api/enrollment-tokens/et%2F1", "client must encode token ids in paths");
-assert(calls[5].options.method === "DELETE", "client must DELETE token revocation");
-assert(calls[6].path === "/api/jobs/command", "client must call command job endpoint");
-assert(calls[6].options.method === "POST", "client must POST command jobs");
-assert(calls[7].path === "/api/jobs/runbook", "client must call runbook job endpoint");
+assert(calls[5].options.method === "POST", "client must POST agent key revocation");
+assert(calls[6].path === "/api/enrollment-tokens", "client must call token list endpoint");
+assert(calls[7].path === "/api/enrollment-tokens", "client must call token create endpoint");
+assert(calls[7].options.method === "POST", "client must POST token creation");
+assert(calls[8].path === "/api/enrollment-tokens/et%2F1", "client must encode token ids in paths");
+assert(calls[8].options.method === "DELETE", "client must DELETE token revocation");
+assert(calls[9].path === "/api/jobs/command", "client must call command job endpoint");
+assert(calls[9].options.method === "POST", "client must POST command jobs");
+assert(calls[10].path === "/api/jobs/runbook", "client must call runbook job endpoint");
 assert(calls[7].options.method === "POST", "client must POST runbook jobs");
 assert(
   calls[6].options.headers.Authorization === "Bearer admin-token",
@@ -227,15 +248,31 @@ assert(
   "revoked agents must include a revoked badge",
 );
 
-const factsText = renderSnapshot({ body: { os: "linux", disk: { usage_available: true } } }, "");
+const factsText = renderSnapshot(
+  {
+    collected_at_ms: 1000,
+    agent_system_time_ms: 2000,
+    body: { system_time_ms: 2000, os: "linux", disk: { usage_available: true } },
+  },
+  "",
+);
+assert(factsText.includes("Agent time: 1970-01-01T00:00:02.000Z"), "facts renderer must show agent time");
+assert(factsText.includes("Stored at: 1970-01-01T00:00:01.000Z"), "facts renderer must show stored time");
 assert(factsText.includes("\"os\": \"linux\""), "facts renderer must show snapshot JSON");
+assert(
+  formatUnixMillis(2000) === "1970-01-01T00:00:02.000Z (2000 ms)",
+  "time formatter must render epoch millis as ISO text",
+);
 
 const driftHtml = renderDrift({
   policy_name: "nginx-running",
   status: "drifted",
   expected: "service nginx running",
   actual: "service nginx stopped",
+  checked_at_ms: 1000,
+  agent_system_time_ms: 2000,
 });
+assert(driftHtml.includes("Agent time 1970-01-01T00:00:02.000Z"), "drift renderer must include agent time");
 assert(driftHtml.includes("Expected"), "drift renderer must include expected section");
 assert(driftHtml.includes("service nginx stopped"), "drift renderer must include actual detail");
 

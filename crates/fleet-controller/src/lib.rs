@@ -16,10 +16,11 @@ use fleet_application::{
     CreateRunbookJobError, CreateRunbookJobInput, DriftRepository, EnrollmentTokenRepository,
     EnrollmentTokenUseCaseError, EnsureAdminToken, FactsRepository, GetInventoryAgent,
     GetLatestDrift, GetLatestFacts, GetLatestMetrics, JobOutputChunk, JobOutputRepository,
-    JobOutputStream, JobQueryRepository, JobRepository, ListAuditEvents, ListEnrollmentTokens,
-    ListInventoryAgents, ListJobOutputForJob, ListJobSummaries, MetricsRepository, RevokeAgentKey,
-    RevokeAgentKeyError, RevokeAgentKeyInput, RevokeEnrollmentToken, RevokeEnrollmentTokenInput,
-    RunbookJobRepository, TaskAssignmentRepository, TaskEnvelopeSigner, UpdateAgentLabels,
+    JobOutputStream, JobQueryRepository, JobRepository, ListAuditEvents, ListDriftReports,
+    ListEnrollmentTokens, ListFactsSnapshots, ListInventoryAgents, ListJobOutputForJob,
+    ListJobSummaries, ListMetricsSnapshots, MetricsRepository, RevokeAgentKey, RevokeAgentKeyError,
+    RevokeAgentKeyInput, RevokeEnrollmentToken, RevokeEnrollmentTokenInput, RunbookJobRepository,
+    SnapshotPageCursor, TaskAssignmentRepository, TaskEnvelopeSigner, UpdateAgentLabels,
     UpdateAgentLabelsError, UpdateAgentLabelsInput, VerifyAdminToken, select_dispatch_targets,
 };
 use fleet_domain::{
@@ -49,6 +50,8 @@ const ADMIN_STYLES_CSS: &str = include_str!("../../../web-admin/styles.css");
 const ADMIN_APP_JS: &str = include_str!("../../../web-admin/app.js");
 const ADMIN_API_CLIENT_JS: &str = include_str!("../../../web-admin/api-client.js");
 const ADMIN_API_SCHEMA_JSON: &str = include_str!("../../../web-admin/api.schema.json");
+const OPENAPI_JSON: &str = include_str!("../../../docs/openapi.json");
+const SWAGGER_UI_HTML: &str = include_str!("../../../docs/swagger-ui.html");
 const AGENT_OFFLINE_AFTER: Duration = Duration::from_secs(90);
 
 #[derive(Debug, Clone)]
@@ -298,24 +301,75 @@ pub struct UpdateAgentLabelsRequest {
 pub struct LatestFactsResponse {
     pub agent_id: String,
     pub collected_at_ms: u64,
+    pub agent_system_time_ms: u64,
     pub body: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FactsSnapshotItemResponse {
+    pub agent_id: String,
+    pub collected_at_ms: u64,
+    pub agent_system_time_ms: u64,
+    pub body: serde_json::Value,
+    pub cursor: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FactsSnapshotPageResponse {
+    pub items: Vec<FactsSnapshotItemResponse>,
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LatestMetricsResponse {
     pub agent_id: String,
     pub collected_at_ms: u64,
+    pub agent_system_time_ms: u64,
     pub body: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricsSnapshotItemResponse {
+    pub agent_id: String,
+    pub collected_at_ms: u64,
+    pub agent_system_time_ms: u64,
+    pub body: serde_json::Value,
+    pub cursor: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricsSnapshotPageResponse {
+    pub items: Vec<MetricsSnapshotItemResponse>,
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LatestDriftReportResponse {
     pub agent_id: String,
     pub checked_at_ms: u64,
+    pub agent_system_time_ms: u64,
     pub policy_name: String,
     pub status: String,
     pub expected: String,
     pub actual: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriftReportItemResponse {
+    pub agent_id: String,
+    pub checked_at_ms: u64,
+    pub agent_system_time_ms: u64,
+    pub policy_name: String,
+    pub status: String,
+    pub expected: String,
+    pub actual: String,
+    pub cursor: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriftReportPageResponse {
+    pub items: Vec<DriftReportItemResponse>,
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -919,6 +973,7 @@ fn handle_agent_task_data_message(
     agent_id: &str,
     message: fleet_protocol::WireMessage,
 ) -> Result<bool, ControllerError> {
+    let agent_message_time = millis_to_system_time(message.timestamp_ms);
     match message.payload {
         fleet_protocol::WirePayload::OutputChunk {
             job_id,
@@ -981,9 +1036,9 @@ fn handle_agent_task_data_message(
                 audit_security(store, "websocket_facts_agent_mismatch", agent_id)?;
             } else {
                 if facts_payload_is_degraded(&body) {
-                    store.mark_agent_degraded(agent_id, SystemTime::now())?;
+                    store.mark_agent_degraded(agent_id, agent_message_time)?;
                 }
-                store.insert_facts_snapshot(agent_id, &body, SystemTime::now())?;
+                store.insert_facts_snapshot(agent_id, &body, agent_message_time)?;
             }
         }
         fleet_protocol::WirePayload::MetricsSnapshot {
@@ -993,7 +1048,7 @@ fn handle_agent_task_data_message(
             if event_agent_id != agent_id {
                 audit_security(store, "websocket_metrics_agent_mismatch", agent_id)?;
             } else {
-                store.insert_metrics_snapshot(agent_id, &body, SystemTime::now())?;
+                store.insert_metrics_snapshot(agent_id, &body, agent_message_time)?;
             }
         }
         fleet_protocol::WirePayload::DriftReport {
@@ -1011,7 +1066,7 @@ fn handle_agent_task_data_message(
                     expected,
                     actual,
                 };
-                store.insert_drift_report(agent_id, &report, SystemTime::now())?;
+                store.insert_drift_report(agent_id, &report, agent_message_time)?;
                 audit_drift(
                     store,
                     "drift_report_received",
@@ -1154,27 +1209,48 @@ fn route_request_with_identity(
     };
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or_default();
-    let path = parts.next().unwrap_or_default();
+    let raw_path = parts.next().unwrap_or_default();
+    let route_path = path_without_query(raw_path);
 
-    if method == "GET" && path == "/healthz" {
+    if method == "GET" && route_path == "/healthz" {
         return Ok(response(200, "application/json", "{\"status\":\"ok\"}\n"));
     }
 
-    if method == "GET" && path == "/favicon.ico" {
+    if method == "GET" && route_path == "/favicon.ico" {
         return Ok(response(204, "image/x-icon", ""));
     }
 
-    if method == "GET" && path == "/api/controller/identity" {
+    if method == "GET" && route_path == "/openapi.json" {
+        return Ok(response(
+            200,
+            "application/json; charset=utf-8",
+            OPENAPI_JSON,
+        ));
+    }
+
+    if method == "GET"
+        && matches!(
+            route_path,
+            "/swagger-ui" | "/swagger-ui/" | "/swagger-ui/index.html"
+        )
+    {
+        return Ok(response(200, "text/html; charset=utf-8", SWAGGER_UI_HTML));
+    }
+
+    if method == "GET" && route_path == "/api/controller/identity" {
         let body = serde_json::to_string(&controller_identity_response(identity, metadata))
             .map_err(|error| ControllerError::Json(error.to_string()))?;
         return Ok(response(200, "application/json", &format!("{body}\n")));
     }
 
-    if method == "GET" && path.starts_with("/admin") {
-        return Ok(admin_static_response(path));
+    if method == "GET" && route_path.starts_with("/admin") {
+        return Ok(admin_static_response(raw_path));
     }
 
-    if path.starts_with("/api/") && path != "/api/agents/enroll" && !authorized(request, store)? {
+    if route_path.starts_with("/api/")
+        && route_path != "/api/agents/enroll"
+        && !authorized(request, store)?
+    {
         return Ok(response(
             401,
             "application/json",
@@ -1182,7 +1258,7 @@ fn route_request_with_identity(
         ));
     }
 
-    match (method, path) {
+    match (method, route_path) {
         ("POST", "/api/agents/enroll") => {
             match enroll_agent(request_body(request), store, identity) {
                 Ok(body) => Ok(response(201, "application/json", &format!("{body}\n"))),
@@ -1300,6 +1376,21 @@ fn route_request_with_identity(
                 None => Ok(response(200, "application/json", "null\n")),
             }
         }
+        ("GET", path) if path.starts_with("/api/agents/") && path.ends_with("/facts") => {
+            let agent_id = path
+                .trim_start_matches("/api/agents/")
+                .trim_end_matches("/facts")
+                .trim_end_matches('/');
+            match list_facts_snapshots(agent_id, raw_path, store) {
+                Ok(body) => Ok(response(200, "application/json", &format!("{body}\n"))),
+                Err(ControllerError::Json(message)) => Ok(response(
+                    400,
+                    "application/json",
+                    &format!("{{\"error\":\"{}\"}}\n", json_escape(&message)),
+                )),
+                Err(error) => Err(error),
+            }
+        }
         ("GET", path) if path.starts_with("/api/agents/") && path.ends_with("/metrics/latest") => {
             let agent_id = path
                 .trim_start_matches("/api/agents/")
@@ -1310,6 +1401,21 @@ fn route_request_with_identity(
                 None => Ok(response(200, "application/json", "null\n")),
             }
         }
+        ("GET", path) if path.starts_with("/api/agents/") && path.ends_with("/metrics") => {
+            let agent_id = path
+                .trim_start_matches("/api/agents/")
+                .trim_end_matches("/metrics")
+                .trim_end_matches('/');
+            match list_metrics_snapshots(agent_id, raw_path, store) {
+                Ok(body) => Ok(response(200, "application/json", &format!("{body}\n"))),
+                Err(ControllerError::Json(message)) => Ok(response(
+                    400,
+                    "application/json",
+                    &format!("{{\"error\":\"{}\"}}\n", json_escape(&message)),
+                )),
+                Err(error) => Err(error),
+            }
+        }
         ("GET", path) if path.starts_with("/api/agents/") && path.ends_with("/drift/latest") => {
             let agent_id = path
                 .trim_start_matches("/api/agents/")
@@ -1318,6 +1424,21 @@ fn route_request_with_identity(
             match latest_drift_report(agent_id, store)? {
                 Some(body) => Ok(response(200, "application/json", &format!("{body}\n"))),
                 None => Ok(response(200, "application/json", "null\n")),
+            }
+        }
+        ("GET", path) if path.starts_with("/api/agents/") && path.ends_with("/drift") => {
+            let agent_id = path
+                .trim_start_matches("/api/agents/")
+                .trim_end_matches("/drift")
+                .trim_end_matches('/');
+            match list_drift_reports(agent_id, raw_path, store) {
+                Ok(body) => Ok(response(200, "application/json", &format!("{body}\n"))),
+                Err(ControllerError::Json(message)) => Ok(response(
+                    400,
+                    "application/json",
+                    &format!("{{\"error\":\"{}\"}}\n", json_escape(&message)),
+                )),
+                Err(error) => Err(error),
             }
         }
         ("POST", path) if path.starts_with("/api/agents/") && path.ends_with("/revoke-key") => {
@@ -1421,7 +1542,7 @@ fn controller_identity_response(
 }
 
 fn admin_static_response(path: &str) -> String {
-    let path = path.split_once('?').map(|(path, _)| path).unwrap_or(path);
+    let path = path_without_query(path);
     match path {
         "/admin" | "/admin/" | "/admin/index.html" => {
             response(200, "text/html; charset=utf-8", ADMIN_INDEX_HTML)
@@ -1439,6 +1560,88 @@ fn admin_static_response(path: &str) -> String {
             ADMIN_API_SCHEMA_JSON,
         ),
         _ => response(404, "application/json", "{\"error\":\"not_found\"}\n"),
+    }
+}
+
+fn path_without_query(path: &str) -> &str {
+    path.split_once('?').map(|(path, _)| path).unwrap_or(path)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SnapshotPageRequest {
+    limit: usize,
+    before: Option<SnapshotPageCursor>,
+}
+
+impl SnapshotPageRequest {
+    fn fetch_limit(self) -> usize {
+        self.limit.saturating_add(1).min(501)
+    }
+}
+
+fn parse_snapshot_page_request(raw_path: &str) -> Result<SnapshotPageRequest, ControllerError> {
+    let limit = match query_param(raw_path, "limit") {
+        Some(value) => value
+            .parse::<usize>()
+            .map_err(|_| ControllerError::Json("limit must be a positive integer".to_owned()))?,
+        None => 50,
+    };
+    if limit == 0 {
+        return Err(ControllerError::Json(
+            "limit must be a positive integer".to_owned(),
+        ));
+    }
+    let before = query_param(raw_path, "before")
+        .map(parse_snapshot_page_cursor)
+        .transpose()?;
+    Ok(SnapshotPageRequest {
+        limit: limit.min(500),
+        before,
+    })
+}
+
+fn query_param<'a>(raw_path: &'a str, name: &str) -> Option<&'a str> {
+    raw_path.split_once('?')?.1.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if key == name { Some(value) } else { None }
+    })
+}
+
+fn parse_snapshot_page_cursor(value: &str) -> Result<SnapshotPageCursor, ControllerError> {
+    let value = value.replace("%3A", ":").replace("%3a", ":");
+    let (occurred_at_seconds, row_id) = value.split_once(':').ok_or_else(|| {
+        ControllerError::Json("before cursor must be <seconds>:<row_id>".to_owned())
+    })?;
+    let occurred_at_seconds = occurred_at_seconds
+        .parse::<u64>()
+        .map_err(|_| ControllerError::Json("before cursor seconds must be numeric".to_owned()))?;
+    let row_id = row_id
+        .parse::<i64>()
+        .map_err(|_| ControllerError::Json("before cursor row id must be numeric".to_owned()))?;
+    if row_id <= 0 {
+        return Err(ControllerError::Json(
+            "before cursor row id must be positive".to_owned(),
+        ));
+    }
+    Ok(SnapshotPageCursor {
+        occurred_at: UNIX_EPOCH + Duration::from_secs(occurred_at_seconds),
+        row_id,
+    })
+}
+
+fn encode_snapshot_page_cursor(cursor: SnapshotPageCursor) -> String {
+    format!(
+        "{}:{}",
+        system_time_to_millis(cursor.occurred_at) / 1000,
+        cursor.row_id
+    )
+}
+
+fn next_snapshot_cursor(last_cursor: Option<SnapshotPageCursor>, has_more: bool) -> Option<String> {
+    if has_more {
+        last_cursor.map(encode_snapshot_page_cursor)
+    } else {
+        None
     }
 }
 
@@ -1898,10 +2101,46 @@ fn latest_facts(agent_id: &str, store: &SqliteStore) -> Result<Option<String>, C
     serde_json::to_string(&LatestFactsResponse {
         agent_id: snapshot.agent_id,
         collected_at_ms: system_time_to_millis(snapshot.collected_at),
+        agent_system_time_ms: agent_system_time_ms_from_body(&body)
+            .unwrap_or_else(|| system_time_to_millis(snapshot.collected_at)),
         body,
     })
     .map(Some)
     .map_err(|error| ControllerError::Json(error.to_string()))
+}
+
+fn list_facts_snapshots(
+    agent_id: &str,
+    raw_path: &str,
+    store: &SqliteStore,
+) -> Result<String, ControllerError> {
+    let page = parse_snapshot_page_request(raw_path)?;
+    let repo = ControllerFactsRepository { store };
+    let mut snapshots =
+        ListFactsSnapshots::execute(&repo, agent_id, page.fetch_limit(), page.before)?;
+    let has_more = snapshots.len() > page.limit;
+    if has_more {
+        snapshots.truncate(page.limit);
+    }
+    let next_cursor =
+        next_snapshot_cursor(snapshots.last().map(|snapshot| snapshot.cursor), has_more);
+    let items = snapshots
+        .into_iter()
+        .map(|snapshot| {
+            let body = serde_json::from_str(&snapshot.body)
+                .map_err(|error| ControllerError::Json(error.to_string()))?;
+            Ok(FactsSnapshotItemResponse {
+                agent_id: snapshot.agent_id,
+                collected_at_ms: system_time_to_millis(snapshot.collected_at),
+                agent_system_time_ms: agent_system_time_ms_from_body(&body)
+                    .unwrap_or_else(|| system_time_to_millis(snapshot.collected_at)),
+                body,
+                cursor: encode_snapshot_page_cursor(snapshot.cursor),
+            })
+        })
+        .collect::<Result<Vec<_>, ControllerError>>()?;
+    serde_json::to_string(&FactsSnapshotPageResponse { items, next_cursor })
+        .map_err(|error| ControllerError::Json(error.to_string()))
 }
 
 fn list_jobs(store: &SqliteStore) -> Result<String, ControllerError> {
@@ -1944,10 +2183,46 @@ fn latest_metrics(agent_id: &str, store: &SqliteStore) -> Result<Option<String>,
     serde_json::to_string(&LatestMetricsResponse {
         agent_id: snapshot.agent_id,
         collected_at_ms: system_time_to_millis(snapshot.collected_at),
+        agent_system_time_ms: agent_system_time_ms_from_body(&body)
+            .unwrap_or_else(|| system_time_to_millis(snapshot.collected_at)),
         body,
     })
     .map(Some)
     .map_err(|error| ControllerError::Json(error.to_string()))
+}
+
+fn list_metrics_snapshots(
+    agent_id: &str,
+    raw_path: &str,
+    store: &SqliteStore,
+) -> Result<String, ControllerError> {
+    let page = parse_snapshot_page_request(raw_path)?;
+    let repo = ControllerMetricsRepository { store };
+    let mut snapshots =
+        ListMetricsSnapshots::execute(&repo, agent_id, page.fetch_limit(), page.before)?;
+    let has_more = snapshots.len() > page.limit;
+    if has_more {
+        snapshots.truncate(page.limit);
+    }
+    let next_cursor =
+        next_snapshot_cursor(snapshots.last().map(|snapshot| snapshot.cursor), has_more);
+    let items = snapshots
+        .into_iter()
+        .map(|snapshot| {
+            let body = serde_json::from_str(&snapshot.body)
+                .map_err(|error| ControllerError::Json(error.to_string()))?;
+            Ok(MetricsSnapshotItemResponse {
+                agent_id: snapshot.agent_id,
+                collected_at_ms: system_time_to_millis(snapshot.collected_at),
+                agent_system_time_ms: agent_system_time_ms_from_body(&body)
+                    .unwrap_or_else(|| system_time_to_millis(snapshot.collected_at)),
+                body,
+                cursor: encode_snapshot_page_cursor(snapshot.cursor),
+            })
+        })
+        .collect::<Result<Vec<_>, ControllerError>>()?;
+    serde_json::to_string(&MetricsSnapshotPageResponse { items, next_cursor })
+        .map_err(|error| ControllerError::Json(error.to_string()))
 }
 
 fn latest_drift_report(
@@ -1961,6 +2236,7 @@ fn latest_drift_report(
     serde_json::to_string(&LatestDriftReportResponse {
         agent_id: record.agent_id,
         checked_at_ms: system_time_to_millis(record.checked_at),
+        agent_system_time_ms: system_time_to_millis(record.checked_at),
         policy_name: record.report.policy_name,
         status: drift_status_to_str(&record.report.status).to_owned(),
         expected: record.report.expected,
@@ -1968,6 +2244,36 @@ fn latest_drift_report(
     })
     .map(Some)
     .map_err(|error| ControllerError::Json(error.to_string()))
+}
+
+fn list_drift_reports(
+    agent_id: &str,
+    raw_path: &str,
+    store: &SqliteStore,
+) -> Result<String, ControllerError> {
+    let page = parse_snapshot_page_request(raw_path)?;
+    let repo = ControllerDriftRepository { store };
+    let mut reports = ListDriftReports::execute(&repo, agent_id, page.fetch_limit(), page.before)?;
+    let has_more = reports.len() > page.limit;
+    if has_more {
+        reports.truncate(page.limit);
+    }
+    let next_cursor = next_snapshot_cursor(reports.last().map(|report| report.cursor), has_more);
+    let items = reports
+        .into_iter()
+        .map(|record| DriftReportItemResponse {
+            agent_id: record.agent_id,
+            checked_at_ms: system_time_to_millis(record.checked_at),
+            agent_system_time_ms: system_time_to_millis(record.checked_at),
+            policy_name: record.report.policy_name,
+            status: drift_status_to_str(&record.report.status).to_owned(),
+            expected: record.report.expected,
+            actual: record.report.actual,
+            cursor: encode_snapshot_page_cursor(record.cursor),
+        })
+        .collect::<Vec<_>>();
+    serde_json::to_string(&DriftReportPageResponse { items, next_cursor })
+        .map_err(|error| ControllerError::Json(error.to_string()))
 }
 
 fn list_audit_events(store: &SqliteStore) -> Result<String, ControllerError> {
@@ -2032,6 +2338,12 @@ fn json_string_field(value: &serde_json::Value, key: &str) -> Option<String> {
         .get(key)
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned)
+}
+
+fn agent_system_time_ms_from_body(value: &serde_json::Value) -> Option<u64> {
+    value
+        .get("system_time_ms")
+        .and_then(serde_json::Value::as_u64)
 }
 
 fn agent_to_response(agent: &Agent, facts: Option<&AgentFactsSummary>) -> AgentResponse {
@@ -2290,6 +2602,25 @@ impl FactsRepository for ControllerFactsRepository<'_> {
             }
         }))
     }
+
+    fn list_facts_snapshots(
+        &self,
+        agent_id: &str,
+        limit: usize,
+        before: Option<SnapshotPageCursor>,
+    ) -> Result<Vec<fleet_application::FactsSnapshotPageRecord>, Self::Error> {
+        Ok(self
+            .store
+            .list_facts_snapshots(agent_id, limit, before)?
+            .into_iter()
+            .map(|record| fleet_application::FactsSnapshotPageRecord {
+                agent_id: record.agent_id,
+                body: record.body,
+                collected_at: record.collected_at,
+                cursor: record.cursor,
+            })
+            .collect())
+    }
 }
 
 struct ControllerMetricsRepository<'a> {
@@ -2321,6 +2652,25 @@ impl MetricsRepository for ControllerMetricsRepository<'_> {
             }
         }))
     }
+
+    fn list_metrics_snapshots(
+        &self,
+        agent_id: &str,
+        limit: usize,
+        before: Option<SnapshotPageCursor>,
+    ) -> Result<Vec<fleet_application::MetricsSnapshotPageRecord>, Self::Error> {
+        Ok(self
+            .store
+            .list_metrics_snapshots(agent_id, limit, before)?
+            .into_iter()
+            .map(|record| fleet_application::MetricsSnapshotPageRecord {
+                agent_id: record.agent_id,
+                body: record.body,
+                collected_at: record.collected_at,
+                cursor: record.cursor,
+            })
+            .collect())
+    }
 }
 
 struct ControllerDriftRepository<'a> {
@@ -2350,6 +2700,25 @@ impl DriftRepository for ControllerDriftRepository<'_> {
                 checked_at: record.checked_at,
             }
         }))
+    }
+
+    fn list_drift_reports(
+        &self,
+        agent_id: &str,
+        limit: usize,
+        before: Option<SnapshotPageCursor>,
+    ) -> Result<Vec<fleet_application::DriftReportPageRecord>, Self::Error> {
+        Ok(self
+            .store
+            .list_drift_reports(agent_id, limit, before)?
+            .into_iter()
+            .map(|record| fleet_application::DriftReportPageRecord {
+                agent_id: record.agent_id,
+                report: record.report,
+                checked_at: record.checked_at,
+                cursor: record.cursor,
+            })
+            .collect())
     }
 }
 
@@ -2901,6 +3270,12 @@ fn system_time_to_millis(value: SystemTime) -> u64 {
         .as_millis() as u64
 }
 
+fn millis_to_system_time(value: u64) -> SystemTime {
+    UNIX_EPOCH
+        .checked_add(Duration::from_millis(value))
+        .unwrap_or(UNIX_EPOCH)
+}
+
 fn epoch_millis() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2998,6 +3373,56 @@ mod tests {
         assert!(schema.contains("\"schema_version\": \"mvp-1\""));
         assert!(favicon.starts_with("HTTP/1.1 204"));
         assert!(missing.starts_with("HTTP/1.1 404"));
+    }
+
+    #[test]
+    fn openapi_and_swagger_ui_are_public() {
+        let store = SqliteStore::in_memory().unwrap();
+
+        let openapi = route_request("GET /openapi.json HTTP/1.1\r\n\r\n", &store).unwrap();
+        let swagger = route_request("GET /swagger-ui?try=1 HTTP/1.1\r\n\r\n", &store).unwrap();
+
+        assert!(openapi.starts_with("HTTP/1.1 200"));
+        assert!(openapi.contains("Content-Type: application/json; charset=utf-8"));
+        let body = openapi.split("\r\n\r\n").nth(1).unwrap_or_default();
+        let document: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(document["openapi"], "3.1.0");
+        assert_eq!(
+            document
+                .pointer("/components/securitySchemes/bearerAuth/type")
+                .and_then(serde_json::Value::as_str),
+            Some("http")
+        );
+        assert!(document.pointer("/paths/~1healthz").is_some());
+        assert!(document.pointer("/paths/~1api~1agents").is_some());
+        assert!(
+            document
+                .pointer("/paths/~1api~1agents~1{agent_id}~1facts~1latest")
+                .is_some()
+        );
+        assert!(
+            document
+                .pointer("/paths/~1api~1agents~1{agent_id}~1facts")
+                .is_some()
+        );
+        assert!(
+            document
+                .pointer("/paths/~1api~1agents~1{agent_id}~1metrics")
+                .is_some()
+        );
+        assert!(
+            document
+                .pointer("/paths/~1api~1agents~1{agent_id}~1drift")
+                .is_some()
+        );
+        assert!(document.pointer("/paths/~1api~1jobs~1command").is_some());
+        assert!(document.pointer("/paths/~1api~1audit").is_some());
+
+        assert!(swagger.starts_with("HTTP/1.1 200"));
+        assert!(swagger.contains("Content-Type: text/html; charset=utf-8"));
+        assert!(swagger.contains("SwaggerUIBundle"));
+        assert!(swagger.contains("/openapi.json"));
+        assert!(swagger.contains("HTTP is test-only"));
     }
 
     #[test]
@@ -3764,7 +4189,7 @@ spec:
             "msg-facts",
             "corr-facts",
             Some("agent-1".to_owned()),
-            1,
+            1000,
             fleet_protocol::WirePayload::FactsSnapshot {
                 agent_id: "agent-1".to_owned(),
                 body: "{\"os\":\"linux\",\"arch\":\"x86_64\"}".to_owned(),
@@ -3775,6 +4200,10 @@ spec:
         let snapshot = store.latest_facts_snapshot("agent-1").unwrap().unwrap();
 
         assert!(!finished);
+        assert_eq!(
+            snapshot.collected_at,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1)
+        );
         assert!(snapshot.body.contains("\"os\":\"linux\""));
     }
 
@@ -3811,7 +4240,7 @@ spec:
             "msg-metrics",
             "corr-metrics",
             Some("agent-1".to_owned()),
-            1,
+            1000,
             fleet_protocol::WirePayload::MetricsSnapshot {
                 agent_id: "agent-1".to_owned(),
                 body: "{\"cpu\":{\"logical_count\":4}}".to_owned(),
@@ -3822,6 +4251,10 @@ spec:
         let snapshot = store.latest_metrics_snapshot("agent-1").unwrap().unwrap();
 
         assert!(!finished);
+        assert_eq!(
+            snapshot.collected_at,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1)
+        );
         assert!(snapshot.body.contains("\"logical_count\":4"));
     }
 
@@ -3833,7 +4266,7 @@ spec:
             "msg-drift",
             "corr-drift",
             Some("agent-1".to_owned()),
-            1,
+            1000,
             fleet_protocol::WirePayload::DriftReport {
                 agent_id: "agent-1".to_owned(),
                 status: "drifted".to_owned(),
@@ -3849,6 +4282,10 @@ spec:
             .unwrap();
 
         assert!(!finished);
+        assert_eq!(
+            record.checked_at,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1)
+        );
         assert_eq!(record.report.status, DriftStatus::Drifted);
         assert_eq!(record.report.actual, "stopped");
         assert_eq!(audits.len(), 1);
@@ -3878,6 +4315,8 @@ spec:
 
         assert!(response.starts_with("HTTP/1.1 200"));
         assert!(response.contains("\"agent_id\":\"agent-1\""));
+        assert!(response.contains("\"collected_at_ms\":1000"));
+        assert!(response.contains("\"agent_system_time_ms\":1000"));
         assert!(response.contains("\"os\":\"linux\""));
     }
 
@@ -3904,6 +4343,8 @@ spec:
 
         assert!(response.starts_with("HTTP/1.1 200"));
         assert!(response.contains("\"agent_id\":\"agent-1\""));
+        assert!(response.contains("\"collected_at_ms\":1000"));
+        assert!(response.contains("\"agent_system_time_ms\":1000"));
         assert!(response.contains("\"logical_count\":4"));
     }
 
@@ -3935,8 +4376,207 @@ spec:
 
         assert!(response.starts_with("HTTP/1.1 200"));
         assert!(response.contains("\"agent_id\":\"agent-1\""));
+        assert!(response.contains("\"checked_at_ms\":1000"));
+        assert!(response.contains("\"agent_system_time_ms\":1000"));
         assert!(response.contains("\"status\":\"drifted\""));
         assert!(response.contains("\"actual\":\"stopped\""));
+    }
+
+    #[test]
+    fn admin_latest_facts_prefers_payload_system_time_when_present() {
+        let store = SqliteStore::in_memory().unwrap();
+        store
+            .insert_admin_token_hash(&hash_token("admin-token"))
+            .unwrap();
+        save_test_agent(&store, "agent-1");
+        store
+            .insert_facts_snapshot(
+                "agent-1",
+                "{\"system_time_ms\":123456,\"os\":\"linux\"}",
+                SystemTime::UNIX_EPOCH + Duration::from_secs(1),
+            )
+            .unwrap();
+
+        let response = route_request(
+            "GET /api/agents/agent-1/facts/latest HTTP/1.1\r\nAuthorization: Bearer admin-token\r\n\r\n",
+            &store,
+        )
+        .unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 200"));
+        assert!(response.contains("\"collected_at_ms\":1000"));
+        assert!(response.contains("\"agent_system_time_ms\":123456"));
+    }
+
+    #[test]
+    fn admin_can_page_facts_metrics_and_drift_reports() {
+        let store = SqliteStore::in_memory().unwrap();
+        store
+            .insert_admin_token_hash(&hash_token("admin-token"))
+            .unwrap();
+        save_test_agent(&store, "agent-1");
+        for body in ["{\"seq\":1}", "{\"seq\":2}", "{\"seq\":3}"] {
+            store
+                .insert_facts_snapshot(
+                    "agent-1",
+                    body,
+                    SystemTime::UNIX_EPOCH + Duration::from_secs(1),
+                )
+                .unwrap();
+        }
+        for (seconds, body) in [
+            (1, "{\"cpu\":{\"logical_count\":1}}"),
+            (2, "{\"cpu\":{\"logical_count\":2}}"),
+            (3, "{\"cpu\":{\"logical_count\":3}}"),
+        ] {
+            store
+                .insert_metrics_snapshot(
+                    "agent-1",
+                    body,
+                    SystemTime::UNIX_EPOCH + Duration::from_secs(seconds),
+                )
+                .unwrap();
+        }
+        for (seconds, status, actual) in [
+            (1, DriftStatus::Unknown, "unknown"),
+            (2, DriftStatus::Compliant, "running"),
+            (3, DriftStatus::Drifted, "stopped"),
+        ] {
+            store
+                .insert_drift_report(
+                    "agent-1",
+                    &DriftReport {
+                        policy_name: "nginx-running".to_owned(),
+                        status,
+                        expected: "service nginx running".to_owned(),
+                        actual: actual.to_owned(),
+                    },
+                    SystemTime::UNIX_EPOCH + Duration::from_secs(seconds),
+                )
+                .unwrap();
+        }
+
+        let facts_first = route_request(
+            "GET /api/agents/agent-1/facts?limit=2 HTTP/1.1\r\nAuthorization: Bearer admin-token\r\n\r\n",
+            &store,
+        )
+        .unwrap();
+        assert!(facts_first.starts_with("HTTP/1.1 200"));
+        let facts_first: serde_json::Value =
+            serde_json::from_str(facts_first.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(facts_first["items"].as_array().unwrap().len(), 2);
+        assert_eq!(facts_first["items"][0]["body"]["seq"], 3);
+        assert_eq!(facts_first["items"][0]["agent_system_time_ms"], 1000);
+        let facts_cursor = facts_first["next_cursor"].as_str().unwrap();
+        let encoded_facts_cursor = facts_cursor.replace(':', "%3A");
+        let facts_second = route_request(
+            &format!(
+                "GET /api/agents/agent-1/facts?limit=2&before={encoded_facts_cursor} HTTP/1.1\r\nAuthorization: Bearer admin-token\r\n\r\n"
+            ),
+            &store,
+        )
+        .unwrap();
+        let facts_second: serde_json::Value =
+            serde_json::from_str(facts_second.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(facts_second["items"].as_array().unwrap().len(), 1);
+        assert_eq!(facts_second["items"][0]["body"]["seq"], 1);
+        assert!(facts_second["next_cursor"].is_null());
+
+        let metrics_first = route_request(
+            "GET /api/agents/agent-1/metrics?limit=2 HTTP/1.1\r\nAuthorization: Bearer admin-token\r\n\r\n",
+            &store,
+        )
+        .unwrap();
+        let metrics_first: serde_json::Value =
+            serde_json::from_str(metrics_first.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(metrics_first["items"][0]["body"]["cpu"]["logical_count"], 3);
+        assert_eq!(metrics_first["items"][0]["agent_system_time_ms"], 3000);
+        let metrics_cursor = metrics_first["next_cursor"].as_str().unwrap();
+        let metrics_second = route_request(
+            &format!(
+                "GET /api/agents/agent-1/metrics?limit=2&before={metrics_cursor} HTTP/1.1\r\nAuthorization: Bearer admin-token\r\n\r\n"
+            ),
+            &store,
+        )
+        .unwrap();
+        let metrics_second: serde_json::Value =
+            serde_json::from_str(metrics_second.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(
+            metrics_second["items"][0]["body"]["cpu"]["logical_count"],
+            1
+        );
+
+        let drift_first = route_request(
+            "GET /api/agents/agent-1/drift?limit=2 HTTP/1.1\r\nAuthorization: Bearer admin-token\r\n\r\n",
+            &store,
+        )
+        .unwrap();
+        let drift_first: serde_json::Value =
+            serde_json::from_str(drift_first.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(drift_first["items"][0]["status"], "drifted");
+        assert_eq!(drift_first["items"][0]["agent_system_time_ms"], 3000);
+        let drift_cursor = drift_first["next_cursor"].as_str().unwrap();
+        let drift_second = route_request(
+            &format!(
+                "GET /api/agents/agent-1/drift?limit=2&before={drift_cursor} HTTP/1.1\r\nAuthorization: Bearer admin-token\r\n\r\n"
+            ),
+            &store,
+        )
+        .unwrap();
+        let drift_second: serde_json::Value =
+            serde_json::from_str(drift_second.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(drift_second["items"][0]["status"], "unknown");
+    }
+
+    #[test]
+    fn admin_snapshot_page_rejects_invalid_query() {
+        let store = SqliteStore::in_memory().unwrap();
+        store
+            .insert_admin_token_hash(&hash_token("admin-token"))
+            .unwrap();
+
+        let bad_limit = route_request(
+            "GET /api/agents/agent-1/facts?limit=0 HTTP/1.1\r\nAuthorization: Bearer admin-token\r\n\r\n",
+            &store,
+        )
+        .unwrap();
+        let bad_cursor = route_request(
+            "GET /api/agents/agent-1/metrics?before=not-a-cursor HTTP/1.1\r\nAuthorization: Bearer admin-token\r\n\r\n",
+            &store,
+        )
+        .unwrap();
+
+        assert!(bad_limit.starts_with("HTTP/1.1 400"));
+        assert!(bad_cursor.starts_with("HTTP/1.1 400"));
+    }
+
+    #[test]
+    fn admin_snapshot_page_omits_next_cursor_when_no_more_rows_exist() {
+        let store = SqliteStore::in_memory().unwrap();
+        store
+            .insert_admin_token_hash(&hash_token("admin-token"))
+            .unwrap();
+        save_test_agent(&store, "agent-1");
+        for body in ["{\"seq\":1}", "{\"seq\":2}"] {
+            store
+                .insert_facts_snapshot(
+                    "agent-1",
+                    body,
+                    SystemTime::UNIX_EPOCH + Duration::from_secs(1),
+                )
+                .unwrap();
+        }
+
+        let response = route_request(
+            "GET /api/agents/agent-1/facts?limit=2 HTTP/1.1\r\nAuthorization: Bearer admin-token\r\n\r\n",
+            &store,
+        )
+        .unwrap();
+        let response: serde_json::Value =
+            serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+
+        assert_eq!(response["items"].as_array().unwrap().len(), 2);
+        assert!(response["next_cursor"].is_null());
     }
 
     #[test]
