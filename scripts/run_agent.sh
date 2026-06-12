@@ -28,7 +28,7 @@ case "${1:-}" in
       exec "$BIN" controller --help
     fi
     cat >&2 <<EOF
-error: run_agent.sh wraps only 'sponzey agent start'
+ERROR: run_agent.sh wraps only 'sponzey agent start'
 
 For controller commands, use:
 
@@ -70,7 +70,7 @@ done
 
 if [ ! -f "$DATA_DIR/agent/agent.conf" ]; then
   cat >&2 <<EOF
-error: agent is not enrolled for data dir: $DATA_DIR
+ERROR: agent is not enrolled for data dir: $DATA_DIR
 
 Start a controller, create an enrollment token, then enroll the agent with the same data dir:
 

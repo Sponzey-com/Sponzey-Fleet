@@ -41,7 +41,7 @@ case "${1:-}" in
       exec "$BIN" agent --help
     fi
     cat >&2 <<EOF
-error: run_controller.sh wraps only 'sponzey controller start'
+ERROR: run_controller.sh wraps only 'sponzey controller start'
 
 For agent commands, use:
 
@@ -83,7 +83,7 @@ done
 
 if [ ! -f "$DATA_DIR/controller/controller_public.key" ] || [ ! -f "$DATA_DIR/controller/controller_private.key" ]; then
   cat >&2 <<EOF
-error: controller is not initialized for data dir: $DATA_DIR
+ERROR: controller is not initialized for data dir: $DATA_DIR
 
 Initialize it once before starting the controller:
 

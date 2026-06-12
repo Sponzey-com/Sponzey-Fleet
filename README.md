@@ -40,6 +40,22 @@ npm install -g @sponzey/fleet
 sponzey --help
 ```
 
+If `sponzey` is not found after installation, your npm global bin directory is
+not in `PATH`. The installer creates the npm global `sponzey` launcher when it
+can, and also tries to create a PATH-visible launcher in a safe writable bin
+directory such as `/usr/local/bin`. If your shell still cannot find `sponzey`,
+check the npm bin directory with:
+
+```bash
+echo "$(npm prefix -g)/bin"
+```
+
+Then add that directory to your shell `PATH`, for example:
+
+```bash
+export PATH="$(npm prefix -g)/bin:$PATH"
+```
+
 From this source repository:
 
 ```bash
@@ -181,6 +197,11 @@ sponzey agent start \
 ```
 
 Refresh Web Admin. The agent should appear in the agent list.
+
+`agent start` is meant to stay alive. If the controller is temporarily down or
+the network is unavailable, it keeps retrying by default. Use `--once` for a
+single smoke check, or `--max-reconnect-attempts <N>` when you explicitly want
+the process to exit after repeated connection failures.
 
 ## HTTPS Preparation
 
@@ -329,7 +350,7 @@ The controller data directory was probably not initialized. Run
 
 Run `sponzey agent init ...` before `sponzey agent start ...`.
 
-### `warning: insecure HTTP controller URL enabled`
+### `WARNING: insecure HTTP controller URL enabled`
 
 This is not a crash. It means your controller URL starts with `http://`, so
 controller-agent traffic is not encrypted. HTTP is test-only. Product,

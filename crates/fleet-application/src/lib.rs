@@ -20,6 +20,7 @@ pub trait AgentInventoryRepository {
 
     fn list_agents(&self) -> Result<Vec<Agent>, Self::Error>;
     fn find_agent_by_id(&self, id: &AgentId) -> Result<Option<Agent>, Self::Error>;
+    fn revoke_agent_key(&mut self, id: &AgentId) -> Result<bool, Self::Error>;
     fn update_agent_labels(
         &mut self,
         id: &AgentId,
@@ -1042,6 +1043,81 @@ impl UpdateAgentLabels {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevokeAgentKeyInput {
+    pub agent_id: String,
+    pub actor: String,
+    pub occurred_at: SystemTime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RevokeAgentKeyError<RepoError, AuditError> {
+    Agent(AgentError),
+    Repository(RepoError),
+    Audit(AuditError),
+}
+
+impl<RepoError, AuditError> Display for RevokeAgentKeyError<RepoError, AuditError>
+where
+    RepoError: Display,
+    AuditError: Display,
+{
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Agent(error) => write!(formatter, "{error}"),
+            Self::Repository(error) => write!(formatter, "repository error: {error}"),
+            Self::Audit(error) => write!(formatter, "audit error: {error}"),
+        }
+    }
+}
+
+pub type RevokeAgentKeyResult<R, A> = Result<
+    Option<Agent>,
+    RevokeAgentKeyError<<R as AgentInventoryRepository>::Error, <A as AuditWriter>::Error>,
+>;
+
+pub struct RevokeAgentKey;
+
+impl RevokeAgentKey {
+    pub fn execute<R, A>(
+        repo: &mut R,
+        audit: &mut A,
+        input: RevokeAgentKeyInput,
+    ) -> RevokeAgentKeyResult<R, A>
+    where
+        R: AgentInventoryRepository,
+        A: AuditWriter,
+    {
+        let agent_id = AgentId::new(input.agent_id.clone()).map_err(RevokeAgentKeyError::Agent)?;
+        let Some(agent) = repo
+            .find_agent_by_id(&agent_id)
+            .map_err(RevokeAgentKeyError::Repository)?
+        else {
+            return Ok(None);
+        };
+
+        if agent.status() == AgentStatus::Disabled {
+            return Ok(Some(agent));
+        }
+
+        repo.revoke_agent_key(&agent_id)
+            .map_err(RevokeAgentKeyError::Repository)?;
+        audit
+            .write(AuditEvent {
+                category: AuditCategory::Agent,
+                action: "agent_key_revoked".to_owned(),
+                actor: AuditActor::new(input.actor),
+                target: AuditTarget::new(input.agent_id),
+                value: AuditValue::Plain("status=revoked".to_owned()),
+                occurred_at: input.occurred_at,
+            })
+            .map_err(RevokeAgentKeyError::Audit)?;
+
+        repo.find_agent_by_id(&agent_id)
+            .map_err(RevokeAgentKeyError::Repository)
+    }
+}
+
 pub struct EnsureAdminToken;
 
 impl EnsureAdminToken {
@@ -1523,6 +1599,78 @@ mod tests {
     }
 
     #[test]
+    fn revoke_agent_key_disables_agent_and_writes_audit() {
+        let mut repo = FakeAgentInventoryRepository::default();
+        repo.agents.push(agent("web-01", "web"));
+        let mut audit = FakeAuditWriter::default();
+
+        let revoked = RevokeAgentKey::execute(
+            &mut repo,
+            &mut audit,
+            RevokeAgentKeyInput {
+                agent_id: "web-01".to_owned(),
+                actor: "admin".to_owned(),
+                occurred_at: SystemTime::UNIX_EPOCH,
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(revoked.status(), AgentStatus::Disabled);
+        assert_eq!(audit.events.len(), 1);
+        assert_eq!(audit.events[0].category, AuditCategory::Agent);
+        assert_eq!(audit.events[0].action, "agent_key_revoked");
+        assert_eq!(
+            audit.events[0].value,
+            AuditValue::Plain("status=revoked".to_owned())
+        );
+    }
+
+    #[test]
+    fn revoke_agent_key_is_idempotent_without_duplicate_audit() {
+        let mut repo = FakeAgentInventoryRepository::default();
+        let mut agent = agent("web-01", "web");
+        agent.disable();
+        repo.agents.push(agent);
+        let mut audit = FakeAuditWriter::default();
+
+        let revoked = RevokeAgentKey::execute(
+            &mut repo,
+            &mut audit,
+            RevokeAgentKeyInput {
+                agent_id: "web-01".to_owned(),
+                actor: "admin".to_owned(),
+                occurred_at: SystemTime::UNIX_EPOCH,
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(revoked.status(), AgentStatus::Disabled);
+        assert!(audit.events.is_empty());
+    }
+
+    #[test]
+    fn revoke_agent_key_returns_none_without_audit_for_missing_agent() {
+        let mut repo = FakeAgentInventoryRepository::default();
+        let mut audit = FakeAuditWriter::default();
+
+        let revoked = RevokeAgentKey::execute(
+            &mut repo,
+            &mut audit,
+            RevokeAgentKeyInput {
+                agent_id: "missing".to_owned(),
+                actor: "admin".to_owned(),
+                occurred_at: SystemTime::UNIX_EPOCH,
+            },
+        )
+        .unwrap();
+
+        assert!(revoked.is_none());
+        assert!(audit.events.is_empty());
+    }
+
+    #[test]
     fn admin_token_use_cases_create_once_and_verify_hash() {
         let mut repo = FakeAdminTokenRepository::default();
 
@@ -1690,6 +1838,14 @@ spec:
 
         fn find_agent_by_id(&self, id: &AgentId) -> Result<Option<Agent>, Self::Error> {
             Ok(self.agents.iter().find(|agent| agent.id() == id).cloned())
+        }
+
+        fn revoke_agent_key(&mut self, id: &AgentId) -> Result<bool, Self::Error> {
+            let Some(agent) = self.agents.iter_mut().find(|agent| agent.id() == id) else {
+                return Ok(false);
+            };
+            agent.disable();
+            Ok(true)
         }
 
         fn update_agent_labels(

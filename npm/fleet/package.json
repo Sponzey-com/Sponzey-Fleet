@@ -1,18 +1,19 @@
 {
   "name": "@sponzey/fleet",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Sponzey Fleet Rust binary distribution wrapper",
   "bin": {
     "sponzey": "bin/sponzey"
   },
   "scripts": {
+    "postinstall": "node ./scripts/postinstall.js",
     "test": "node ./scripts/check-bin.js && node ./scripts/check-version.js && node ./scripts/check-platform-packages.js"
   },
   "optionalDependencies": {
-    "@sponzey/fleet-darwin-arm64": "0.1.9",
-    "@sponzey/fleet-darwin-x64": "0.1.9",
-    "@sponzey/fleet-linux-arm64": "0.1.9",
-    "@sponzey/fleet-linux-x64": "0.1.9"
+    "@sponzey/fleet-darwin-arm64": "0.1.10",
+    "@sponzey/fleet-darwin-x64": "0.1.10",
+    "@sponzey/fleet-linux-arm64": "0.1.10",
+    "@sponzey/fleet-linux-x64": "0.1.10"
   },
   "files": [
     "bin",

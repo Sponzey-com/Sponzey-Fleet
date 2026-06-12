@@ -60,6 +60,12 @@ export function createApiClient({ fetchImpl = globalThis.fetch, tokenProvider = 
     getLatestDrift(agentId) {
       return request(`/api/agents/${encodePathValue(agentId)}/drift/latest`);
     },
+    revokeAgentKey(agentId, body = {}) {
+      return request(`/api/agents/${encodePathValue(agentId)}/revoke-key`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+    },
     listJobs() {
       return request("/api/jobs");
     },

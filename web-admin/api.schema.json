@@ -5,6 +5,7 @@
     { "name": "getLatestFacts", "method": "GET", "path": "/api/agents/{agent_id}/facts/latest" },
     { "name": "getLatestMetrics", "method": "GET", "path": "/api/agents/{agent_id}/metrics/latest" },
     { "name": "getLatestDrift", "method": "GET", "path": "/api/agents/{agent_id}/drift/latest" },
+    { "name": "revokeAgentKey", "method": "POST", "path": "/api/agents/{agent_id}/revoke-key" },
     { "name": "listJobs", "method": "GET", "path": "/api/jobs" },
     { "name": "getJobOutput", "method": "GET", "path": "/api/jobs/{job_id}/output" },
     { "name": "listAudit", "method": "GET", "path": "/api/audit" },

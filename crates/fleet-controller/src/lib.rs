@@ -17,10 +17,10 @@ use fleet_application::{
     EnrollmentTokenUseCaseError, EnsureAdminToken, FactsRepository, GetInventoryAgent,
     GetLatestDrift, GetLatestFacts, GetLatestMetrics, JobOutputChunk, JobOutputRepository,
     JobOutputStream, JobQueryRepository, JobRepository, ListAuditEvents, ListEnrollmentTokens,
-    ListInventoryAgents, ListJobOutputForJob, ListJobSummaries, MetricsRepository,
-    RevokeEnrollmentToken, RevokeEnrollmentTokenInput, RunbookJobRepository,
-    TaskAssignmentRepository, TaskEnvelopeSigner, UpdateAgentLabels, UpdateAgentLabelsError,
-    UpdateAgentLabelsInput, VerifyAdminToken, select_dispatch_targets,
+    ListInventoryAgents, ListJobOutputForJob, ListJobSummaries, MetricsRepository, RevokeAgentKey,
+    RevokeAgentKeyError, RevokeAgentKeyInput, RevokeEnrollmentToken, RevokeEnrollmentTokenInput,
+    RunbookJobRepository, TaskAssignmentRepository, TaskEnvelopeSigner, UpdateAgentLabels,
+    UpdateAgentLabelsError, UpdateAgentLabelsInput, VerifyAdminToken, select_dispatch_targets,
 };
 use fleet_domain::{
     Agent, AgentFingerprint, AgentId, AgentIdentity, AgentLabel, AgentName, AgentPublicKey,
@@ -279,6 +279,7 @@ pub struct AgentResponse {
     pub id: String,
     pub name: String,
     pub status: String,
+    pub revoked: bool,
     pub fingerprint: String,
     pub labels: Vec<AgentLabelResponse>,
     pub last_seen_at_ms: Option<u64>,
@@ -412,7 +413,10 @@ where
     }
     if let Some(target) = &insecure_http_target {
         eprintln!(
-            "warning: insecure HTTP controller URL enabled: {target}; HTTP is test-only and not encrypted; use HTTPS for product or production environments"
+            "{}",
+            fleet_core::format_warning_message(format!(
+                "insecure HTTP controller URL enabled: {target}; HTTP is test-only and not encrypted; use HTTPS for product or production environments"
+            ))
         );
     }
 
@@ -1316,6 +1320,28 @@ fn route_request_with_identity(
                 None => Ok(response(200, "application/json", "null\n")),
             }
         }
+        ("POST", path) if path.starts_with("/api/agents/") && path.ends_with("/revoke-key") => {
+            let agent_id = path
+                .trim_start_matches("/api/agents/")
+                .trim_end_matches("/revoke-key")
+                .trim_end_matches('/');
+            match revoke_agent_key(agent_id, store) {
+                Ok(Some(body)) => Ok(response(200, "application/json", &format!("{body}\n"))),
+                Ok(None) => Ok(response(
+                    404,
+                    "application/json",
+                    "{\"error\":\"not_found\"}\n",
+                )),
+                Err(ControllerError::Store(fleet_store::StoreError::Domain(message))) => {
+                    Ok(response(
+                        400,
+                        "application/json",
+                        &format!("{{\"error\":\"{}\"}}\n", json_escape(&message)),
+                    ))
+                }
+                Err(error) => Err(error),
+            }
+        }
         ("GET", path) if path.starts_with("/api/agents/") && path != "/api/agents/ws" => {
             let agent_id = path.trim_start_matches("/api/agents/");
             match get_agent(agent_id, store)? {
@@ -1837,6 +1863,31 @@ fn update_agent_labels(
         .map_err(|error| ControllerError::Json(error.to_string()))
 }
 
+fn revoke_agent_key(
+    agent_id: &str,
+    store: &SqliteStore,
+) -> Result<Option<String>, ControllerError> {
+    let mut repo = ControllerAgentInventoryRepository { store };
+    let mut audit = ControllerAuditWriter { store };
+    let Some(agent) = RevokeAgentKey::execute(
+        &mut repo,
+        &mut audit,
+        RevokeAgentKeyInput {
+            agent_id: agent_id.to_owned(),
+            actor: "admin".to_owned(),
+            occurred_at: SystemTime::now(),
+        },
+    )
+    .map_err(map_revoke_agent_key_error)?
+    else {
+        return Ok(None);
+    };
+    let response = agent_to_response_with_latest_facts(&agent, store)?;
+    serde_json::to_string(&response)
+        .map(Some)
+        .map_err(|error| ControllerError::Json(error.to_string()))
+}
+
 fn latest_facts(agent_id: &str, store: &SqliteStore) -> Result<Option<String>, ControllerError> {
     let repo = ControllerFactsRepository { store };
     let Some(snapshot) = GetLatestFacts::execute(&repo, agent_id)? else {
@@ -1985,10 +2036,12 @@ fn json_string_field(value: &serde_json::Value, key: &str) -> Option<String> {
 
 fn agent_to_response(agent: &Agent, facts: Option<&AgentFactsSummary>) -> AgentResponse {
     let last_seen_at = agent.last_seen_at();
+    let revoked = agent.status() == AgentStatus::Disabled;
     AgentResponse {
         id: agent.id().as_str().to_owned(),
         name: agent.name().as_str().to_owned(),
-        status: agent_status_to_str(agent.status()).to_owned(),
+        status: agent_status_for_inventory(agent.status()).to_owned(),
+        revoked,
         fingerprint: agent.identity().fingerprint.as_str().to_owned(),
         labels: agent
             .labels()
@@ -2003,6 +2056,14 @@ fn agent_to_response(agent: &Agent, facts: Option<&AgentFactsSummary>) -> AgentR
         hostname: facts.and_then(|summary| summary.hostname.clone()),
         os: facts.and_then(|summary| summary.os.clone()),
         arch: facts.and_then(|summary| summary.arch.clone()),
+    }
+}
+
+fn agent_status_for_inventory(status: AgentStatus) -> &'static str {
+    if status == AgentStatus::Disabled {
+        "offline"
+    } else {
+        agent_status_to_str(status)
     }
 }
 
@@ -2141,6 +2202,17 @@ fn map_update_agent_labels_error(
     }
 }
 
+fn map_revoke_agent_key_error(
+    error: RevokeAgentKeyError<fleet_store::StoreError, fleet_store::StoreError>,
+) -> ControllerError {
+    match error {
+        RevokeAgentKeyError::Agent(error) => ControllerError::Store(error.into()),
+        RevokeAgentKeyError::Repository(error) | RevokeAgentKeyError::Audit(error) => {
+            ControllerError::Store(error)
+        }
+    }
+}
+
 struct ControllerAdminTokenRepository<'a> {
     store: &'a SqliteStore,
 }
@@ -2174,6 +2246,10 @@ impl AgentInventoryRepository for ControllerAgentInventoryRepository<'_> {
 
     fn find_agent_by_id(&self, id: &AgentId) -> Result<Option<Agent>, Self::Error> {
         self.store.find_agent_by_id(id.as_str())
+    }
+
+    fn revoke_agent_key(&mut self, id: &AgentId) -> Result<bool, Self::Error> {
+        self.store.revoke_agent_key(id.as_str())
     }
 
     fn update_agent_labels(
@@ -3412,11 +3488,68 @@ spec:
         assert!(response.contains("\"id\":\"agent-1\""));
         assert!(response.contains("\"name\":\"agent-1\""));
         assert!(response.contains("\"status\":\"online\""));
+        assert!(response.contains("\"revoked\":false"));
         assert!(response.contains("\"fingerprint\""));
         assert!(response.contains("\"hostname\":\"web-01\""));
         assert!(response.contains("\"os\":\"linux\""));
         assert!(response.contains("\"arch\":\"x86_64\""));
         assert!(response.contains("\"last_seen_age_seconds\""));
+    }
+
+    #[test]
+    fn admin_agent_inventory_reports_revoked_agents_as_offline() {
+        let store = SqliteStore::in_memory().unwrap();
+        store
+            .insert_admin_token_hash(&hash_token("admin-token"))
+            .unwrap();
+        save_disabled_test_agent_with_labels(&store, "agent-revoked", vec![("role", "web")]);
+
+        let response = route_request(
+            "GET /api/agents HTTP/1.1\r\nAuthorization: Bearer admin-token\r\n\r\n",
+            &store,
+        )
+        .unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 200"));
+        assert!(response.contains("\"id\":\"agent-revoked\""));
+        assert!(response.contains("\"status\":\"offline\""));
+        assert!(response.contains("\"revoked\":true"));
+    }
+
+    #[test]
+    fn admin_can_revoke_agent_key_and_agent_becomes_offline_revoked() {
+        let store = SqliteStore::in_memory().unwrap();
+        store
+            .insert_admin_token_hash(&hash_token("admin-token"))
+            .unwrap();
+        save_test_agent(&store, "agent-1");
+        store
+            .mark_agent_online("agent-1", SystemTime::now())
+            .unwrap();
+
+        let response = route_request(
+            "POST /api/agents/agent-1/revoke-key HTTP/1.1\r\nAuthorization: Bearer admin-token\r\n\r\n",
+            &store,
+        )
+        .unwrap();
+        let agent = store.find_agent_by_id("agent-1").unwrap().unwrap();
+        let audits = store
+            .list_audit_events_by_category(AuditCategory::Agent, 10)
+            .unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 200"));
+        assert!(response.contains("\"id\":\"agent-1\""));
+        assert!(response.contains("\"status\":\"offline\""));
+        assert!(response.contains("\"revoked\":true"));
+        assert_eq!(agent.status(), AgentStatus::Disabled);
+        assert!(store.find_agent_identity("agent-1").unwrap().is_none());
+        assert!(
+            !store
+                .mark_agent_online("agent-1", SystemTime::now())
+                .unwrap()
+        );
+        assert_eq!(audits.len(), 1);
+        assert_eq!(audits[0].action, "agent_key_revoked");
     }
 
     #[test]

@@ -79,13 +79,13 @@ ws://127.0.0.1:7700/api/agents/ws
 
 Agent enrollment generates an Ed25519 key pair locally. The private key is stored in `agent_private.key`; the controller stores the public key and fingerprint. On Unix, `agent.conf` and `agent_private.key` must not be readable, writable, or executable by group/other.
 
-`sponzey agent start` runs as a heartbeat loop by default. For smoke tests and one-shot checks, pass `--once`.
+`sponzey agent start` runs as a heartbeat loop by default. Controller connection failures are retried indefinitely unless `--once` or `--max-reconnect-attempts` is set. For smoke tests and one-shot checks, pass `--once`.
 
 Security notes:
 
 - HTTP/WebSocket controller URLs are test-only and emit insecure transport warnings.
 - Product, customer, production, shared, and long-running environments must use HTTPS/WSS.
-- Agent start checks the pinned controller fingerprint before opening the WebSocket.
+- Agent heartbeat checks the pinned controller fingerprint before opening the WebSocket.
 - WebSocket authentication failures are recorded as security audit events.
 - Enrollment tokens are not accepted on the task/heartbeat WebSocket channel.
 

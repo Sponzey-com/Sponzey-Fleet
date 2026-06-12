@@ -39,6 +39,22 @@ npm install -g @sponzey/fleet
 sponzey --help
 ```
 
+설치 후 `sponzey` 명령을 찾지 못하면 npm global bin 경로가 `PATH`에
+없는 상태입니다. 설치 스크립트는 가능한 경우 npm global `sponzey`
+launcher를 만들고, `/usr/local/bin`처럼 안전하고 쓰기 가능한 `PATH`
+안의 bin 디렉토리에도 launcher 생성을 시도합니다. 그래도 shell이
+`sponzey`를 찾지 못하면 먼저 npm bin 경로를 확인합니다.
+
+```bash
+echo "$(npm prefix -g)/bin"
+```
+
+그 경로를 shell `PATH`에 추가합니다.
+
+```bash
+export PATH="$(npm prefix -g)/bin:$PATH"
+```
+
 이 저장소에서 직접 실행하려면:
 
 ```bash
@@ -177,6 +193,11 @@ sponzey agent start \
 ```
 
 Web Admin을 새로고침하면 agent 목록에 나타납니다.
+
+`agent start`는 계속 살아있는 실행을 기본으로 합니다. Controller가 잠시
+꺼져 있거나 네트워크가 끊겨도 기본적으로 계속 재시도합니다. 한 번만
+확인하려면 `--once`를 쓰고, 반복 접속 실패 후 명시적으로 종료시키고 싶을
+때만 `--max-reconnect-attempts <N>`을 사용합니다.
 
 ## HTTPS 준비
 
@@ -322,7 +343,7 @@ rm -rf .sponzey
 
 `sponzey agent start ...` 전에 `sponzey agent init ...`을 먼저 실행해야 합니다.
 
-### `warning: insecure HTTP controller URL enabled`
+### `WARNING: insecure HTTP controller URL enabled`
 
 오류가 아닙니다. controller URL이 `http://`로 시작해서 controller-agent
 통신이 암호화되지 않는다는 뜻입니다. HTTP는 테스트 전용입니다. 제품, 고객,

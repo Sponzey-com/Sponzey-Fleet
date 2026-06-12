@@ -1,6 +1,6 @@
 {
   "name": "@sponzey/fleet-darwin-arm64",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Sponzey Fleet Rust binary for macOS arm64",
   "os": [
     "darwin"

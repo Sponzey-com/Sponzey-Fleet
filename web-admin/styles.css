@@ -85,6 +85,12 @@ button {
   font-weight: 700;
 }
 
+button:disabled {
+  cursor: not-allowed;
+  background: #d8dee9;
+  color: #687385;
+}
+
 .status {
   border: 1px solid #d8dee9;
   border-radius: 6px;
@@ -143,6 +149,19 @@ button {
   margin-bottom: 12px;
 }
 
+.panel-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+#revoke-agent-key:not(:disabled) {
+  border-color: #b42318;
+  background: #b42318;
+}
+
 .muted {
   color: #687385;
   font-size: 12px;
@@ -181,6 +200,14 @@ button {
 .job-row small {
   display: block;
   overflow-wrap: anywhere;
+}
+
+.agent-status {
+  align-self: start;
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
 }
 
 .job-row {

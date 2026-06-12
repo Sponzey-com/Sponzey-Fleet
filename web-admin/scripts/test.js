@@ -24,6 +24,7 @@ const tsconfig = JSON.parse(readFileSync(tsconfigPath, "utf8"));
 
 assert(index.includes("Sponzey Fleet Admin"), "index must name the admin UI");
 assert(index.includes("id=\"agents-list\""), "index must expose the agents surface");
+assert(index.includes("id=\"revoke-agent-key\""), "index must expose agent key revocation");
 assert(index.includes("id=\"facts-panel\""), "index must expose the facts surface");
 assert(index.includes("id=\"metrics-panel\""), "index must expose the metrics surface");
 assert(index.includes("id=\"drift-panel\""), "index must expose the drift surface");
@@ -54,6 +55,7 @@ for (const endpoint of [
   "getLatestFacts",
   "getLatestMetrics",
   "getLatestDrift",
+  "revokeAgentKey",
   "listJobs",
   "getJobOutput",
   "listAudit",
@@ -106,6 +108,7 @@ const client = createApiClient({
 });
 await client.listAgents();
 await client.getLatestFacts("agent/1");
+await client.revokeAgentKey("agent/1");
 await client.listEnrollmentTokens();
 await client.createEnrollmentToken({ labels: "role=web", max_uses: 1, expires_in_seconds: 60 });
 await client.revokeEnrollmentToken("et/1");
@@ -116,17 +119,22 @@ assert(
   calls[1].path === "/api/agents/agent%2F1/facts/latest",
   "client must encode agent ids in paths",
 );
-assert(calls[2].path === "/api/enrollment-tokens", "client must call token list endpoint");
-assert(calls[3].path === "/api/enrollment-tokens", "client must call token create endpoint");
-assert(calls[3].options.method === "POST", "client must POST token creation");
-assert(calls[4].path === "/api/enrollment-tokens/et%2F1", "client must encode token ids in paths");
-assert(calls[4].options.method === "DELETE", "client must DELETE token revocation");
-assert(calls[5].path === "/api/jobs/command", "client must call command job endpoint");
-assert(calls[5].options.method === "POST", "client must POST command jobs");
-assert(calls[6].path === "/api/jobs/runbook", "client must call runbook job endpoint");
-assert(calls[6].options.method === "POST", "client must POST runbook jobs");
 assert(
-  calls[5].options.headers.Authorization === "Bearer admin-token",
+  calls[2].path === "/api/agents/agent%2F1/revoke-key",
+  "client must encode agent ids in key revocation paths",
+);
+assert(calls[2].options.method === "POST", "client must POST agent key revocation");
+assert(calls[3].path === "/api/enrollment-tokens", "client must call token list endpoint");
+assert(calls[4].path === "/api/enrollment-tokens", "client must call token create endpoint");
+assert(calls[4].options.method === "POST", "client must POST token creation");
+assert(calls[5].path === "/api/enrollment-tokens/et%2F1", "client must encode token ids in paths");
+assert(calls[5].options.method === "DELETE", "client must DELETE token revocation");
+assert(calls[6].path === "/api/jobs/command", "client must call command job endpoint");
+assert(calls[6].options.method === "POST", "client must POST command jobs");
+assert(calls[7].path === "/api/jobs/runbook", "client must call runbook job endpoint");
+assert(calls[7].options.method === "POST", "client must POST runbook jobs");
+assert(
+  calls[6].options.headers.Authorization === "Bearer admin-token",
   "client must attach bearer token",
 );
 
@@ -188,6 +196,7 @@ const agentsHtml = renderAgents([
     id: "agent-1",
     name: "web-01",
     status: "online",
+    revoked: false,
     labels: [{ key: "role", value: "web" }],
     hostname: "web-01.local",
     os: "linux",
@@ -199,6 +208,24 @@ assert(agentsHtml.includes("web-01"), "agents renderer must include agent name")
 assert(agentsHtml.includes("role=web"), "agents renderer must include labels");
 assert(agentsHtml.includes("linux/x86_64"), "agents renderer must include platform summary");
 assert(agentsHtml.includes("last seen 5s ago"), "agents renderer must include last seen age");
+
+const revokedAgentHtml = renderAgents([
+  {
+    id: "agent-revoked",
+    name: "revoked-agent",
+    status: "disabled",
+    revoked: true,
+    labels: [],
+  },
+]);
+assert(
+  revokedAgentHtml.includes('status-pill offline">offline'),
+  "revoked agents must be displayed as offline",
+);
+assert(
+  revokedAgentHtml.includes('status-pill revoked">revoked'),
+  "revoked agents must include a revoked badge",
+);
 
 const factsText = renderSnapshot({ body: { os: "linux", disk: { usage_available: true } } }, "");
 assert(factsText.includes("\"os\": \"linux\""), "facts renderer must show snapshot JSON");

@@ -1,5 +1,7 @@
 use clap::{Args, Parser, Subcommand};
-use fleet_core::{LogProfile, init_logging, redact_secret};
+use fleet_core::{
+    LogProfile, format_error_message, format_warning_message, init_logging, redact_secret,
+};
 use std::fmt::{Display, Formatter};
 use std::fs::{self, OpenOptions};
 use std::io::{BufReader, Read, Write};
@@ -175,7 +177,7 @@ pub enum AgentSubcommand {
     },
     #[command(
         about = "Start the enrolled local agent",
-        long_about = "Start the enrolled local agent heartbeat and task loop.\n\nThe agent reads its local identity from <data-dir>/agent/agent.conf, verifies the pinned controller fingerprint, sends facts and metrics during heartbeat, and receives controller-signed tasks. The agent must be enrolled before this command can run.",
+        long_about = "Start the enrolled local agent heartbeat and task loop.\n\nThe agent reads its local identity from <data-dir>/agent/agent.conf, verifies the pinned controller fingerprint during heartbeat, sends facts and metrics, and receives controller-signed tasks. Connection failures are retried indefinitely by default. The agent must be enrolled before this command can run.",
         after_help = "Examples:\n  sponzey agent start --data-dir .sponzey\n  sponzey agent start --data-dir /var/lib/sponzey-fleet\n  sponzey agent start --data-dir .sponzey --once\n\nLocal development flow:\n  sponzey controller init --data-dir .sponzey\n  sponzey enroll-token create --data-dir .sponzey --labels role=web,env=dev\n  sponzey agent init --data-dir .sponzey --url http://127.0.0.1:7700 --token <token> --name web-01 --labels role=web,env=dev\n  sponzey agent start --data-dir .sponzey"
     )]
     Start {
@@ -471,7 +473,7 @@ pub fn main_entry() -> ExitCode {
     match execute(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("error: {error}");
+            eprintln!("{}", format_error_message(error.to_string()));
             ExitCode::from(2)
         }
     }
@@ -735,7 +737,6 @@ fn execute_agent(command: AgentCommand) -> Result<(), CliError> {
             }
             let config = read_agent_config(&path)?;
             warn_if_insecure_http_url(&config.url);
-            validate_pinned_controller(&config)?;
             run_agent_heartbeat_loop(
                 &config,
                 AgentHeartbeatOptions {
@@ -1282,7 +1283,10 @@ fn execute_demo(command: DemoCommand) -> Result<(), CliError> {
     println!("demo admin: {controller_url}/admin");
     println!("demo controller fingerprint: {controller_fingerprint}");
     eprintln!(
-        "warning: demo uses insecure HTTP controller URL: {controller_url}; HTTP is test-only and not encrypted; use HTTPS for product or production environments"
+        "{}",
+        format_warning_message(format!(
+            "demo uses insecure HTTP controller URL: {controller_url}; HTTP is test-only and not encrypted; use HTTPS for product or production environments"
+        ))
     );
     if command.keep_temp {
         println!("demo data dir: {}", data_dir.display());
@@ -2117,8 +2121,11 @@ fn warn_if_insecure_http_url(url: &str) {
 fn warn_if_insecure_http_endpoint(endpoint: &ControllerEndpoint) {
     if endpoint.scheme == ControllerUrlScheme::Http {
         eprintln!(
-            "warning: insecure HTTP controller URL enabled: {}; HTTP is test-only and not encrypted; use HTTPS for product or production environments",
-            endpoint.api_url("").trim_end_matches('/')
+            "{}",
+            format_warning_message(format!(
+                "insecure HTTP controller URL enabled: {}; HTTP is test-only and not encrypted; use HTTPS for product or production environments",
+                endpoint.api_url("").trim_end_matches('/')
+            ))
         );
     }
 }
@@ -2170,11 +2177,6 @@ fn read_agent_config(path: &Path) -> Result<LocalAgentConfig, CliError> {
     })
 }
 
-fn validate_pinned_controller(config: &LocalAgentConfig) -> Result<(), CliError> {
-    let identity = controller_identity_via_controller(&config.url, config.tls_ca_cert.as_deref())?;
-    validate_pinned_controller_identity(config, &identity)
-}
-
 fn validate_pinned_controller_identity(
     config: &LocalAgentConfig,
     identity: &fleet_controller::ControllerIdentityResponse,
@@ -2209,16 +2211,32 @@ fn run_agent_heartbeat_loop(
     config: &LocalAgentConfig,
     options: AgentHeartbeatOptions,
 ) -> Result<(), CliError> {
+    run_agent_heartbeat_loop_with(
+        options,
+        || run_agent_heartbeat_once(config),
+        std::thread::sleep,
+    )
+}
+
+fn run_agent_heartbeat_loop_with<F, S>(
+    options: AgentHeartbeatOptions,
+    mut heartbeat_once: F,
+    mut sleep: S,
+) -> Result<(), CliError>
+where
+    F: FnMut() -> Result<(), CliError>,
+    S: FnMut(Duration),
+{
     let mut reconnect_attempts = 0;
     loop {
-        match run_agent_heartbeat_once(config) {
+        match heartbeat_once() {
             Ok(()) => {
                 reconnect_attempts = 0;
                 println!("agent heartbeat sent");
                 if options.once {
                     return Ok(());
                 }
-                std::thread::sleep(options.heartbeat_interval);
+                sleep(options.heartbeat_interval);
             }
             Err(error) => {
                 reconnect_attempts += 1;
@@ -2228,8 +2246,11 @@ fn run_agent_heartbeat_loop(
                 {
                     return Err(error);
                 }
-                eprintln!("agent heartbeat failed: {error}");
-                std::thread::sleep(reconnect_backoff(reconnect_attempts));
+                eprintln!(
+                    "{}",
+                    format_warning_message(format!("agent heartbeat failed: {error}"))
+                );
+                sleep(reconnect_backoff(reconnect_attempts));
             }
         }
     }
@@ -3741,6 +3762,7 @@ postgresql.service loaded failed failed PostgreSQL database server
             "Start the enrolled local agent heartbeat and task loop",
             "agent/agent.conf",
             "controller-signed tasks",
+            "Connection failures are retried indefinitely by default",
             "The agent must be enrolled before this command can run",
             "Examples:",
             "Local development flow:",
@@ -4062,6 +4084,50 @@ postgresql.service loaded failed failed PostgreSQL database server
     fn reconnect_backoff_is_capped() {
         assert_eq!(reconnect_backoff(1), Duration::from_secs(2));
         assert_eq!(reconnect_backoff(10), Duration::from_secs(32));
+    }
+
+    #[test]
+    fn agent_heartbeat_loop_retries_connection_failures_until_configured_cap() {
+        let mut attempts = 0;
+        let mut sleeps = Vec::new();
+
+        let result = run_agent_heartbeat_loop_with(
+            AgentHeartbeatOptions {
+                once: false,
+                heartbeat_interval: Duration::from_secs(30),
+                max_reconnect_attempts: 2,
+            },
+            || {
+                attempts += 1;
+                Err(CliError::Http(format!("connection refused #{attempts}")))
+            },
+            |duration| sleeps.push(duration),
+        );
+
+        assert!(matches!(result, Err(CliError::Http(_))));
+        assert_eq!(attempts, 3);
+        assert_eq!(sleeps, vec![Duration::from_secs(2), Duration::from_secs(4)]);
+    }
+
+    #[test]
+    fn agent_heartbeat_loop_once_exits_on_first_failure() {
+        let mut attempts = 0;
+
+        let result = run_agent_heartbeat_loop_with(
+            AgentHeartbeatOptions {
+                once: true,
+                heartbeat_interval: Duration::from_secs(30),
+                max_reconnect_attempts: 0,
+            },
+            || {
+                attempts += 1;
+                Err(CliError::Http("connection refused".to_owned()))
+            },
+            |_| panic!("once mode must not sleep after a failed heartbeat"),
+        );
+
+        assert!(matches!(result, Err(CliError::Http(_))));
+        assert_eq!(attempts, 1);
     }
 
     #[test]

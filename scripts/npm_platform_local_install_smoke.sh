@@ -61,15 +61,16 @@ if [ -z "$WRAPPER_TARBALL" ] || [ -z "$PLATFORM_TARBALL" ]; then
   exit 1
 fi
 
-INSTALL_SCOPE="$WORK_DIR/prefix/lib/node_modules/@sponzey"
-NESTED_PLATFORM_SCOPE="$INSTALL_SCOPE/fleet/node_modules/@sponzey"
-mkdir -p "$INSTALL_SCOPE/fleet" "$NESTED_PLATFORM_SCOPE/fleet-$PLATFORM_OS-$PLATFORM_ARCH" "$WORK_DIR/prefix/bin"
-tar -xzf "$WRAPPER_TARBALL" -C "$INSTALL_SCOPE/fleet" --strip-components 1
-tar -xzf "$PLATFORM_TARBALL" -C "$NESTED_PLATFORM_SCOPE/fleet-$PLATFORM_OS-$PLATFORM_ARCH" --strip-components 1
-ln -s "../lib/node_modules/@sponzey/fleet/bin/sponzey" "$WORK_DIR/prefix/bin/sponzey"
+NPM_CONFIG_PREFIX="$WORK_DIR/prefix" \
+NPM_CONFIG_CACHE="$WORK_DIR/npm-cache" \
+  npm install -g "$PLATFORM_TARBALL" "$WRAPPER_TARBALL" >/dev/null
 
 SPONZEY_FLEET_NPM_OS="$PLATFORM_OS" \
 SPONZEY_FLEET_NPM_ARCH="$PLATFORM_ARCH" \
   "$WORK_DIR/prefix/bin/sponzey" --help >/dev/null
+PATH="$WORK_DIR/prefix/bin:$PATH" \
+SPONZEY_FLEET_NPM_OS="$PLATFORM_OS" \
+SPONZEY_FLEET_NPM_ARCH="$PLATFORM_ARCH" \
+  sponzey --help >/dev/null
 
 echo "npm platform local install smoke ok: $PLATFORM_OS-$PLATFORM_ARCH"

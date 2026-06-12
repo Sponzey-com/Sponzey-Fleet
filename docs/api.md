@@ -345,6 +345,7 @@ Authorization: Bearer <admin-token>
     "id": "agent-web-01",
     "name": "web-01",
     "status": "online",
+    "revoked": false,
     "fingerprint": "<agent-fingerprint>",
     "labels": [
       {"key": "role", "value": "web"}
@@ -360,6 +361,8 @@ Authorization: Bearer <admin-token>
 
 `hostname`, `os`, `arch`는 최신 facts snapshot에서 추출한 얇은 inventory summary다. facts가 아직 없으면 `null`이다. `last_seen_age_seconds`는 response 생성 시점 기준의 health 판단 보조값이며, `last_seen_at_ms`가 없으면 `null`이다.
 
+Agent key가 revoke되어 더 이상 heartbeat를 받아들이면 안 되는 agent는 inventory에서 `"status": "offline"`과 `"revoked": true`를 함께 반환한다. 내부 저장 상태는 disabled/revoked로 분리될 수 있지만, 운영 화면에서는 연결 불가 상태와 revoke 상태가 동시에 드러나야 한다.
+
 ### Detail
 
 ```http
@@ -368,6 +371,15 @@ Authorization: Bearer <admin-token>
 ```
 
 응답은 list item과 같은 shape의 단일 object다. 존재하지 않는 agent는 `404`를 반환한다. Agent public key 원문은 이 API에 노출하지 않는다.
+
+### Revoke Agent Key
+
+```http
+POST /api/agents/{agent_id}/revoke-key
+Authorization: Bearer <admin-token>
+```
+
+Agent key를 revoke하고 agent를 disabled 상태로 전환한다. 응답은 갱신된 agent detail object이며, 운영 화면에서는 `"status": "offline"`과 `"revoked": true`가 함께 표시된다. 이후 같은 key를 사용하는 WebSocket 인증과 heartbeat online 전환은 허용되지 않는다. 존재하지 않는 agent는 `404`를 반환한다. 성공 시 `agent_key_revoked` audit event를 남긴다.
 
 ### Update Labels
 

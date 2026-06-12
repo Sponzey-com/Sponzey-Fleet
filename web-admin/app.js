@@ -38,13 +38,20 @@ export function renderAgents(agents, selectedAgentId = "") {
           : "";
       const meta = [agent.hostname, platform, age].filter(Boolean).join(" · ");
       const selectedClass = agent.id === selectedAgentId ? " selected" : "";
+      const status = agent.revoked ? "offline" : agent.status || "unknown";
+      const revokedBadge = agent.revoked
+        ? '<span class="status-pill revoked">revoked</span>'
+        : "";
       return `
         <button class="agent-row${selectedClass}" type="button" data-agent-id="${escapeHtml(agent.id)}">
           <span>
             <strong>${escapeHtml(agent.name || agent.id)}</strong>
             <small>${escapeHtml(agent.id)}</small>
           </span>
-          <span class="status-pill ${escapeHtml(agent.status || "unknown")}">${escapeHtml(agent.status || "unknown")}</span>
+          <span class="agent-status">
+            <span class="status-pill ${escapeHtml(status)}">${escapeHtml(status)}</span>
+            ${revokedBadge}
+          </span>
           <small class="labels">${escapeHtml(labels || "no labels")}</small>
           <small class="agent-meta">${escapeHtml(meta || "no facts summary")}</small>
         </button>
@@ -260,6 +267,7 @@ async function loadAgents() {
   state.selectedAgentId = selected;
   document.querySelector("#agent-count").textContent = `${state.agents.length} known`;
   document.querySelector("#agents-list").innerHTML = renderAgents(state.agents, selected);
+  syncAgentActions();
   if (selected) {
     await refreshSelectedAgent();
   }
@@ -272,7 +280,21 @@ function handleAgentsListClick(event) {
   }
   state.selectedAgentId = button.dataset.agentId;
   document.querySelector("#agents-list").innerHTML = renderAgents(state.agents, state.selectedAgentId);
+  syncAgentActions();
   refreshSelectedAgent().catch((error) => setStatus(error.message, "error"));
+}
+
+function selectedAgent() {
+  return state.agents.find((agent) => agent.id === state.selectedAgentId) || null;
+}
+
+function syncAgentActions() {
+  const revokeButton = document.querySelector("#revoke-agent-key");
+  if (!revokeButton) {
+    return;
+  }
+  const agent = selectedAgent();
+  revokeButton.disabled = !agent || Boolean(agent.revoked);
 }
 
 async function refreshSelectedAgent() {
@@ -374,6 +396,30 @@ async function revokeEnrollmentToken(id) {
   await loadEnrollmentTokens();
 }
 
+async function revokeSelectedAgentKey() {
+  syncAdminTokenFromInput({ requireToken: true });
+  const agent = selectedAgent();
+  if (!agent) {
+    throw new Error("Select an agent first.");
+  }
+  const label = agent.name || agent.id;
+  if (
+    typeof globalThis.confirm === "function" &&
+    !globalThis.confirm(`Revoke key for ${label}?`)
+  ) {
+    return;
+  }
+  const updated = await api.revokeAgentKey(agent.id);
+  if (updated) {
+    state.agents = state.agents.map((item) => (item.id === updated.id ? updated : item));
+  }
+  document.querySelector("#agents-list").innerHTML = renderAgents(state.agents, state.selectedAgentId);
+  syncAgentActions();
+  await refreshSelectedAgent();
+  document.querySelector("#audit-list").innerHTML = renderAudit(await api.listAudit());
+  setStatus(`Revoked agent key for ${label}.`, "ok");
+}
+
 async function submitCommand(form) {
   syncAdminTokenFromInput({ requireToken: true });
   const data = new FormData(form);
@@ -422,6 +468,9 @@ function boot() {
   if (agentsList) {
     agentsList.addEventListener("click", handleAgentsListClick);
   }
+  document.querySelector("#revoke-agent-key")?.addEventListener("click", () => {
+    revokeSelectedAgentKey().catch((error) => setStatus(error.message, "error"));
+  });
   const enrollmentForm = document.querySelector("#enrollment-token-form");
   if (enrollmentForm) {
     enrollmentForm.addEventListener("submit", (event) => {

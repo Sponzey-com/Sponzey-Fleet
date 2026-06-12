@@ -377,6 +377,16 @@ impl SqliteStore {
         Ok(changed > 0)
     }
 
+    pub fn revoke_agent_key(&self, agent_id: &str) -> Result<bool, StoreError> {
+        let changed = self.connection.execute(
+            "UPDATE agents
+             SET status = 'disabled', updated_at = unixepoch()
+             WHERE id = ?1",
+            params![agent_id],
+        )?;
+        Ok(changed > 0)
+    }
+
     pub fn insert_facts_snapshot(
         &self,
         agent_id: &str,
@@ -580,7 +590,7 @@ impl SqliteStore {
     ) -> Result<Option<(String, String)>, StoreError> {
         self.connection
             .query_row(
-                "SELECT public_key, fingerprint FROM agents WHERE id = ?1",
+                "SELECT public_key, fingerprint FROM agents WHERE id = ?1 AND status != 'disabled'",
                 params![agent_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
@@ -2239,6 +2249,24 @@ mod tests {
 
         assert_eq!(agent.labels()[0].value(), "api");
         assert_eq!(agent.labels()[1].key(), "env");
+    }
+
+    #[test]
+    fn revoked_agent_key_disables_agent_identity() {
+        let store = SqliteStore::in_memory().unwrap();
+        store.save_agent(agent()).unwrap();
+        assert!(store.find_agent_identity("a1").unwrap().is_some());
+
+        assert!(store.revoke_agent_key("a1").unwrap());
+        assert!(store.find_agent_identity("a1").unwrap().is_none());
+        assert!(
+            !store
+                .mark_agent_online("a1", SystemTime::UNIX_EPOCH + Duration::from_secs(5))
+                .unwrap()
+        );
+        let agent = store.find_agent_by_id("a1").unwrap().unwrap();
+
+        assert_eq!(agent.status(), AgentStatus::Disabled);
     }
 
     #[test]
